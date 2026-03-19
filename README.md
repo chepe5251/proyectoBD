@@ -25,9 +25,9 @@ Aplicacion de escritorio que permite consultar y gestionar una base de datos de 
 El proyecto implementa un asistente conversacional con las siguientes capacidades:
 
 - Traduccion de lenguaje natural a T-SQL usando Google Gemini.
-- Autenticacion real mediante logins de SQL Server (no credenciales en la aplicacion).
-- Control de acceso basado en roles (RBAC) en dos niveles: aplicacion y motor de base de datos.
-- Interfaz grafica oscura construida con Tkinter.
+- Autenticacion con correo y contrasena verificados contra `personas.usuarios` via SHA-256 y procedimiento almacenado.
+- Control de acceso basado en roles (RBAC) en dos niveles: motor de SQL Server y capa de aplicacion.
+- Interfaz grafica oscura construida con Tkinter con procesamiento en hilo secundario (sin bloqueo de UI).
 - Formateo de resultados en texto legible para el usuario final.
 
 ---
@@ -93,7 +93,7 @@ Base de datos: `biblioteca` en SQL Server.
 
 | Tabla | Columnas principales |
 |---|---|
-| `personas.usuarios` | id_usuario, nombre_usuario, apellido_usuario, correo, telefono |
+| `personas.usuarios` | id_usuario, nombre_usuario, apellido_usuario, correo, telefono, password_hash, rol |
 | `catalogo.autores` | id_autor, nombre_autor, apellido_autor, nacionalidad |
 | `catalogo.categorias` | id_categoria, nombre_categoria, descripcion |
 | `catalogo.libros` | id_libro, titulo, ano_publicacion, id_autor, id_categoria |
@@ -112,6 +112,7 @@ Base de datos: `biblioteca` en SQL Server.
 
 | Procedimiento | Parametros |
 |---|---|
+| `personas.autenticar_usuario` | @correo, @password_hash — retorna fila con id, nombre, apellido, correo, rol |
 | `personas.registrar_usuario` | @nombre, @apellido, @correo, @telefono |
 | `operaciones.registrar_prestamo` | @id_usuario, @id_libro |
 | `operaciones.devolver_libro` | @id_prestamo |
@@ -121,15 +122,35 @@ Base de datos: `biblioteca` en SQL Server.
 
 ## 5. Seguridad y roles
 
-La autenticacion se realiza directamente contra SQL Server. Cada rol tiene permisos distintos tanto a nivel de motor como a nivel de aplicacion.
+### Flujo de autenticacion
 
-| Login de SQL Server | Contrasena | Rol en la app | Permisos |
-|---|---|---|---|
-| `login_admin` | `admin123` | admin | SELECT, INSERT, UPDATE, DELETE, control de schemas |
-| `login_operativo` | `operativo123` | operativo | SELECT, INSERT, UPDATE en personas/catalogo/operaciones |
-| `login_usuario` | `usuario123` | usuario | Solo SELECT en catalogo |
+1. El usuario ingresa **correo electronico** y **contrasena** en la GUI.
+2. La app calcula `hashlib.sha256(password.encode()).hexdigest()` (64 caracteres hex, minusculas).
+3. Abre una conexion temporal con el login auxiliar `SQL_LOGIN_APP` (permisos minimos: solo puede ejecutar `personas.autenticar_usuario`).
+4. Ejecuta `EXEC personas.autenticar_usuario @correo=?, @password_hash=?`.
+5. Si retorna 0 filas → acceso denegado.
+6. Si retorna 1 fila → lee `id_usuario`, `nombre_usuario`, `apellido_usuario`, `correo` y `rol`.
+7. Selecciona el login de SQL Server correspondiente al rol y reconstruye `DatabaseManager` con esas credenciales.
 
-La capa de aplicacion (`seguridad.py`) bloquea adicionalmente cualquier SQL con `DROP`, `ALTER` o `CREATE DATABASE` para los roles operativo y usuario, como segunda linea de defensa.
+### Roles y logins internos
+
+| Rol en BD | Login de SQL Server | Permisos en el motor |
+|-----------|--------------------|--------------------|
+| `admin` | `login_admin` | SELECT, INSERT, UPDATE, DELETE en todos los esquemas |
+| `operativo` | `login_operativo` | SELECT, INSERT, UPDATE en personas/catalogo/operaciones |
+| `usuario` | `login_usuario` | Solo SELECT en catalogo y vista de prestamos activos |
+
+Los logins de SQL Server son **internos**: el usuario final nunca los ve ni los ingresa.
+
+### Segunda linea de defensa — capa de aplicacion
+
+`seguridad.py` bloquea comandos antes de enviarlos al motor:
+
+| Rol | Comandos bloqueados en aplicacion |
+|-----|----------------------------------|
+| `usuario` | INSERT, UPDATE, DELETE, DROP, ALTER |
+| `operativo` | DROP, ALTER, CREATE DATABASE |
+| `admin` | Ninguno |
 
 ---
 
@@ -171,15 +192,27 @@ pyodbc
 Crear un archivo `.env` en la raiz del proyecto con el siguiente contenido:
 
 ```env
+# Google Gemini
 GEMINI_API_KEY=tu_clave_de_gemini
 
+# Conexion base SQL Server (servidor e instancia)
 DB_SERVER=nombre_del_servidor
 DB_NAME=biblioteca
-DB_USER=login_admin
-DB_PASS=admin123
+
+# Login auxiliar — solo ejecuta personas.autenticar_usuario
+SQL_LOGIN_APP=login_app
+SQL_PASS_APP=AppPass#2026!
+
+# Logins operacionales por rol (la app los selecciona tras autenticar)
+SQL_LOGIN_ADMIN=login_admin
+SQL_PASS_ADMIN=Admin#2026!
+SQL_LOGIN_OPERATIVO=login_operativo
+SQL_PASS_OPERATIVO=Operativo#2026!
+SQL_LOGIN_USUARIO=login_usuario
+SQL_PASS_USUARIO=Usuario#2026!
 ```
 
-> `DB_USER` y `DB_PASS` son las credenciales por defecto usadas antes del login. Una vez autenticado, la aplicacion reconecta usando las credenciales del usuario.
+> Las credenciales de los logins de SQL Server **nunca** se ingresan en la GUI. Solo el correo y la contrasena del usuario de la biblioteca son visibles en la pantalla de login.
 
 ---
 
@@ -195,12 +228,14 @@ python main.py
 
 ### Login
 
-Ingresar el login de SQL Server y su contrasena:
+Ingresar el correo electronico y la contrasena del usuario registrado en `personas.usuarios`:
 
 ```
-Usuario de BD: login_admin
-Contrasena:    admin123
+Correo electronico: aleja@mail.com
+Contrasena:         tu_contrasena
 ```
+
+El sistema verifica las credenciales contra la base de datos via SHA-256 y selecciona automaticamente el login de SQL Server correspondiente al rol del usuario.
 
 ### Chat
 
@@ -222,9 +257,11 @@ Los botones de consulta rapida en la barra inferior envian preguntas predefinida
 
 | Situacion | Comportamiento |
 |---|---|
-| Credenciales incorrectas | Mensaje de error en el login, sin acceso |
+| Correo o contrasena incorrectos | Mensaje de error en el login, sin acceso |
+| Login auxiliar `SQL_LOGIN_APP` inaccesible | Error en consola, acceso denegado sin crashear |
 | Cuota de Gemini agotada (429) | Mensaje con tiempo de espera, input bloqueado temporalmente |
-| Modelo de Gemini no disponible | Fallback automatico al siguiente candidato en la lista |
+| Modelo de Gemini no disponible (404) | Fallback automatico al siguiente candidato en la lista |
+| Import de `google-genai` lento/colgado | Fallback automatico a `google-generativeai` (legacy SDK) |
 | SQL con placeholder `?` sin valor | Mensaje indicando reformular la pregunta |
 | Accion no permitida por el rol | Mensaje explicando los permisos del rol actual |
 | Error de base de datos | Mensaje en el chat, detalle en consola |

@@ -3,17 +3,23 @@ Modulo: seguridad.py
 Descripcion: Autenticacion y control de acceso basado en roles (RBAC).
 
 Responsabilidades:
-    - Autenticar usuarios probando su conexion directa a SQL Server.
-      No se almacenan contrasenas en la aplicacion.
-    - Inferir el rol del usuario a partir del nombre de su login de SQL Server.
+    - Autenticar usuarios verificando correo y hash SHA-256 de contraseña
+      contra la tabla personas.usuarios mediante el procedimiento almacenado
+      personas.autenticar_usuario.
+    - La conexion de autenticacion usa un login auxiliar de solo lectura
+      (SQL_LOGIN_APP) que unicamente puede ejecutar dicho procedimiento.
+    - Seleccionar el login de SQL Server correspondiente al rol obtenido
+      y construir las credenciales para la sesion operacional.
     - Validar el SQL generado por la IA contra las restricciones del rol
       antes de enviarlo a la base de datos (segunda linea de defensa).
 
 Roles soportados:
-    - login_admin     -> admin:     sin restricciones adicionales en aplicacion.
-    - login_operativo -> operativo: bloquea DROP, ALTER, CREATE DATABASE.
-    - login_usuario   -> usuario:   solo SELECT; bloquea todo DML de escritura y DDL.
+    - admin:      sin restricciones adicionales en aplicacion.
+    - operativo:  bloquea DROP, ALTER, CREATE DATABASE.
+    - usuario:    solo SELECT; bloquea todo DML de escritura y DDL.
 """
+
+import hashlib
 
 
 class SecurityManager:
@@ -21,10 +27,10 @@ class SecurityManager:
     Gestiona autenticacion y autorizacion basada en roles para la aplicacion
     de biblioteca.
 
-    La autenticacion se delega a SQL Server: si las credenciales son validas
-    para abrir una conexion, el usuario queda autenticado. El rol se infiere
-    del nombre del login, y los permisos del motor aplican automaticamente
-    sobre todas las consultas posteriores.
+    La autenticacion verifica correo y contraseña contra personas.usuarios
+    mediante el procedimiento almacenado personas.autenticar_usuario, usando
+    un login auxiliar de solo lectura. El login operacional de SQL Server se
+    selecciona segun el rol registrado en la base de datos.
     """
 
     def __init__(self, db_manager):
@@ -35,42 +41,79 @@ class SecurityManager:
         self.db = db_manager
         self.usuario_actual = None
 
-    def login(self, usuario, password):
+    def login(self, correo, password):
         """
-        Autentica al usuario probando una conexion directa a SQL Server.
+        Autentica al usuario verificando sus credenciales contra la BD.
+
+        Flujo:
+        1. Calcula SHA-256 (hexdigest minusculas) de la contraseña.
+        2. Abre conexion temporal con SQL_LOGIN_APP (login auxiliar de solo
+           lectura para autenticar).
+        3. Ejecuta EXEC personas.autenticar_usuario con correo y hash.
+        4. Si retorna 0 filas, las credenciales son incorrectas.
+        5. Si retorna 1 fila, lee id, nombre, apellido, correo y rol.
+        6. Selecciona el login de SQL Server correspondiente al rol.
+        7. Puebla self.usuario_actual con todos los datos de sesion.
 
         Args:
-            usuario (str): Login de SQL Server (ej. 'login_admin').
-            password (str): Contrasena del login.
+            correo   (str): Correo electronico del usuario.
+            password (str): Contraseña en texto plano.
 
         Returns:
-            bool: True si la conexion es exitosa y el usuario queda autenticado.
-                  False si las credenciales son incorrectas o el servidor es
-                  inaccesible.
-
-        Al autenticarse correctamente, puebla self.usuario_actual con id, rol,
-        nombre y credenciales (uid/pwd) para que la capa de presentacion pueda
-        reconectar DatabaseManager bajo la identidad del usuario.
+            bool: True si la autenticacion es exitosa, False en caso contrario.
+                  Ante cualquier error de conexion retorna False sin crashear.
         """
         from database_manager import DatabaseManager
+        from config import (
+            SQL_LOGIN_APP, SQL_PASS_APP,
+            SQL_LOGIN_ADMIN, SQL_PASS_ADMIN,
+            SQL_LOGIN_OPERATIVO, SQL_PASS_OPERATIVO,
+            SQL_LOGIN_USUARIO, SQL_PASS_USUARIO,
+        )
 
-        db_test = DatabaseManager(uid=usuario, pwd=password)
-        if not db_test.probar_conexion():
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+
+        # Conexion auxiliar: solo puede ejecutar personas.autenticar_usuario.
+        try:
+            db_app = DatabaseManager(uid=SQL_LOGIN_APP, pwd=SQL_PASS_APP)
+            filas = db_app.ejecutar_consulta(
+                "EXEC personas.autenticar_usuario @correo=?, @password_hash=?",
+                (correo, password_hash),
+            )
+        except Exception as exc:
+            print(f"Error inesperado en la conexion auxiliar de autenticacion: {exc}")
             return False
 
-        _rol_map = {
-            "login_admin": "admin",
-            "login_operativo": "operativo",
-            "login_usuario": "usuario",
+        if filas is None:
+            print(
+                "Error de autenticacion: fallo la conexion auxiliar o el procedimiento. "
+                "Verificar SQL_LOGIN_APP y permisos en SQL Server."
+            )
+            return False
+
+        if not filas:
+            return False
+
+        fila = filas[0]
+        id_usuario, nombre, apellido, correo_db, rol = (
+            fila[0], fila[1], fila[2], fila[3], fila[4]
+        )
+
+        _login_map = {
+            "admin":     (SQL_LOGIN_ADMIN,     SQL_PASS_ADMIN),
+            "operativo": (SQL_LOGIN_OPERATIVO, SQL_PASS_OPERATIVO),
+            "usuario":   (SQL_LOGIN_USUARIO,   SQL_PASS_USUARIO),
         }
-        rol = _rol_map.get(usuario.lower(), "usuario")
+        uid, pwd = _login_map.get(rol, (SQL_LOGIN_USUARIO, SQL_PASS_USUARIO))
 
         self.usuario_actual = {
-            "id": None,
-            "rol": rol,
-            "nombre": usuario,
-            "uid": usuario,
-            "pwd": password,
+            "id":       id_usuario,
+            "rol":      rol,
+            "nombre":   nombre,
+            "apellido": apellido,
+            "correo":   correo_db,
+            "uid":      uid,
+            "pwd":      pwd,
         }
         return True
 
@@ -93,7 +136,7 @@ class SecurityManager:
         rol = self.usuario_actual["rol"]
         sql = str(sql_generado).upper()
 
-        if rol in ["usuario", "cliente"]:
+        if rol == "usuario":
             # Solo lectura. No permite DML de escritura ni DDL.
             if any(cmd in sql for cmd in ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER"]):
                 return False
@@ -116,7 +159,7 @@ class SecurityManager:
             return "Sin sesion activa."
 
         rol = self.usuario_actual["rol"]
-        if rol in ["usuario", "cliente"]:
+        if rol == "usuario":
             return (
                 "Tu rol es de consulta: puedes leer informacion, "
                 "pero no modificar registros."

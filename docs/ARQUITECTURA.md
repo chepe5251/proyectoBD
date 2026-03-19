@@ -84,12 +84,13 @@ Cada llamada a `ejecutar_consulta` abre y cierra su propia conexion para simplif
 ### 4. Capa de Seguridad — `seguridad.py`
 
 Responsabilidades:
-- Autenticar al usuario intentando una conexion real a SQL Server con sus credenciales (no hay tabla de contrasenas en la aplicacion).
-- Inferir el rol del usuario a partir del nombre del login (`login_admin`, `login_operativo`, `login_usuario`).
+- Autenticar al usuario verificando correo y hash SHA-256 de contrasena contra `personas.usuarios` mediante el procedimiento `personas.autenticar_usuario`, usando un login auxiliar de solo lectura (`SQL_LOGIN_APP`).
+- Seleccionar el login de SQL Server correspondiente al rol obtenido de la base de datos.
+- Poblar `self.usuario_actual` con id, nombre, apellido, correo, rol y credenciales operacionales.
 - Validar el SQL generado por la IA contra las restricciones del rol antes de ejecutarlo.
 
 Dos niveles de control de acceso:
-- **Nivel motor**: SQL Server aplica los permisos del login autenticado.
+- **Nivel motor**: SQL Server aplica los permisos del login seleccionado segun rol.
 - **Nivel aplicacion**: `validar_accion()` bloquea comandos destructivos segun el rol.
 
 | Rol | Restricciones en aplicacion |
@@ -103,8 +104,9 @@ Dos niveles de control de acceso:
 ### 5. Capa de Presentacion — `main.py`
 
 Responsabilidades:
-- Renderizar la pantalla de login y la pantalla de chat con Tkinter.
+- Renderizar la pantalla de login (correo + contrasena) y la pantalla de chat con Tkinter.
 - Orquestar el flujo completo: login → generacion SQL → normalizacion → validacion → ejecucion → formateo → display.
+- Ejecutar el flujo NL->SQL->DB en un hilo secundario (`threading.Thread`) para evitar el bloqueo de la UI.
 - Normalizar el SQL generado por la IA (eliminar markdown, backticks, prefijos textuales).
 - Gestionar el estado de la UI durante el procesamiento (bloqueo de inputs, indicador de estado).
 - Mostrar mensajes de error o advertencia en el chat sin romper el flujo.
@@ -141,11 +143,14 @@ BibliotecaApp.procesar_consulta()
 
 ## Decisiones de diseno
 
-**Autenticacion via SQL Server directamente**
-La aplicacion no almacena contrasenas. Cada usuario usa su login de SQL Server. Esto delega la gestion de credenciales al motor y garantiza que los permisos del motor apliquen automaticamente.
+**Autenticacion con correo y SHA-256 via procedimiento almacenado**
+La aplicacion calcula SHA-256 de la contrasena en Python y lo verifica contra `personas.usuarios` usando un login auxiliar de solo lectura (`SQL_LOGIN_APP`). El rol queda registrado en la tabla, no derivado del nombre del login. Los logins de SQL Server son internos a la aplicacion; el usuario final solo ve un campo de correo y contrasena.
 
-**Reconexion por usuario tras el login**
-Despues de autenticarse, la aplicacion reconstruye `DatabaseManager` con las credenciales del usuario. Todas las consultas posteriores se ejecutan bajo su identidad, activando los permisos del motor de forma transparente.
+**Reconexion por rol tras el login**
+Una vez autenticado, la aplicacion selecciona el login de SQL Server correspondiente al rol del usuario y reconstruye `DatabaseManager` con esas credenciales. Todas las consultas posteriores se ejecutan bajo esa identidad, activando los permisos del motor de forma transparente.
+
+**Procesamiento asincronico en la GUI**
+El flujo NL->SQL->DB se ejecuta en un hilo secundario (`threading.Thread`) para no bloquear la UI de Tkinter. Todas las actualizaciones visuales se despachan al hilo principal mediante `root.after(0, callback)`.
 
 **Fallback de modelos Gemini**
 La lista de candidatos permite que la aplicacion funcione aunque un modelo especifico no este disponible para la API key usada, sin requerir intervencion del usuario.

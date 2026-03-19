@@ -10,13 +10,16 @@ Responsabilidades:
     - Gestionar el estado de la UI (bloqueo de inputs, indicador de estado, cuota de IA).
 
 Flujo de autenticacion:
-    1. El usuario ingresa su login de SQL Server y contrasena.
-    2. SecurityManager.login() prueba la conexion directamente contra SQL Server.
-    3. Si tiene exito, DatabaseManager se reconstruye con las credenciales del usuario.
-    4. Todas las consultas posteriores se ejecutan bajo la identidad autenticada.
+    1. El usuario ingresa su correo electronico y contrasena.
+    2. SecurityManager.login() calcula SHA-256 de la contrasena y verifica
+       contra personas.usuarios via el login auxiliar SQL_LOGIN_APP.
+    3. Si tiene exito, DatabaseManager se reconstruye con el login de SQL Server
+       correspondiente al rol del usuario (admin / operativo / usuario).
+    4. Todas las consultas posteriores se ejecutan bajo esa identidad autenticada.
 """
 
 import re
+import threading
 import time
 import tkinter as tk
 from tkinter import messagebox, scrolledtext
@@ -63,7 +66,7 @@ class BibliotecaApp:
         self.root.configure(bg=self.theme["bg"])
 
         # Servicios.
-        self.db = DatabaseManager()
+        self.db = None  # Se construye con las credenciales del usuario tras el login.
         self.asistente = AIAssistant()
         self.seguridad = None
         self.ai_blocked_until = 0.0
@@ -151,7 +154,7 @@ class BibliotecaApp:
 
         tk.Label(
             form_panel,
-            text="Usuario de BD",
+            text="Correo electronico",
             bg=self.theme["panel"],
             fg=self.theme["text"],
             font=(self.fonts["body"], 10, "bold"),
@@ -207,15 +210,15 @@ class BibliotecaApp:
 
     def ejecutar_login(self):
         """Valida credenciales y abre el chat principal."""
-        usuario = self.ent_correo.get().strip()
+        correo = self.ent_correo.get().strip()
         password = self.ent_pass.get().strip()
 
-        if not usuario or not password:
-            messagebox.showwarning("Datos requeridos", "Debes ingresar usuario y contrasena.")
+        if not correo or not password:
+            messagebox.showwarning("Datos requeridos", "Debes ingresar correo y contrasena.")
             return
 
         self.seguridad = SecurityManager(self.db)
-        if self.seguridad.login(usuario, password):
+        if self.seguridad.login(correo, password):
             info = self.seguridad.usuario_actual
             self.db = DatabaseManager(uid=info["uid"], pwd=info["pwd"])
             self.seguridad.db = self.db
@@ -489,18 +492,28 @@ class BibliotecaApp:
 
         self.mostrar_en_chat(pregunta, autor="Tu")
         self.ent_pregunta.delete(0, tk.END)
-
         self._toggle_input(False)
         self._set_estado("Consultando...", self.theme["warn"])
+
+        threading.Thread(
+            target=self._procesar_en_hilo,
+            args=(pregunta,),
+            daemon=True,
+        ).start()
+
+    def _procesar_en_hilo(self, pregunta):
+        """Ejecuta el flujo NL->SQL->DB en un hilo secundario para no congelar la GUI."""
+
+        def ui(fn, *args):
+            self.root.after(0, fn, *args)
 
         try:
             ahora = time.time()
             if ahora < self.ai_blocked_until:
                 segundos = int(self.ai_blocked_until - ahora) + 1
-                self.mostrar_en_chat(
-                    f"La IA esta temporalmente sin cuota. Intenta de nuevo en {segundos} segundos.",
-                    autor="Sistema",
-                )
+                ui(self.mostrar_en_chat,
+                   f"La IA esta temporalmente sin cuota. Intenta de nuevo en {segundos} segundos.",
+                   "Sistema")
                 return
 
             try:
@@ -508,48 +521,49 @@ class BibliotecaApp:
             except AIQuotaExceededError as exc:
                 retry_after = exc.retry_after_seconds or 30
                 self.ai_blocked_until = time.time() + retry_after
-                self.mostrar_en_chat(str(exc), autor="Sistema")
+                ui(self.mostrar_en_chat, str(exc), "Sistema")
                 return
             except AIServiceError as exc:
-                self.mostrar_en_chat(f"Error de IA: {exc}", autor="Sistema")
+                ui(self.mostrar_en_chat, f"Error de IA: {exc}", "Sistema")
                 return
 
             sql = self._normalizar_sql(sql)
             if not sql:
-                self.mostrar_en_chat("No se pudo generar una consulta valida.", autor="Sistema")
+                ui(self.mostrar_en_chat, "No se pudo generar una consulta valida.", "Sistema")
                 return
 
             if "?" in sql:
-                self.mostrar_en_chat(
-                    "La consulta generada quedo incompleta (placeholder '?'). Intenta reformular.",
-                    autor="Sistema",
-                )
+                ui(self.mostrar_en_chat,
+                   "La consulta generada quedo incompleta (placeholder '?'). Intenta reformular.",
+                   "Sistema")
                 return
 
             if not self.seguridad.validar_accion(sql):
-                self.mostrar_en_chat(
-                    f"No puedo ejecutar esa accion con tu rol actual. {self.seguridad.describir_permisos()}",
-                    autor="Sistema",
-                )
+                ui(self.mostrar_en_chat,
+                   f"No puedo ejecutar esa accion con tu rol actual. {self.seguridad.describir_permisos()}",
+                   "Sistema")
                 return
 
-            print(f"SQL a ejecutar: {sql}")
             datos_crudos = self.db.ejecutar_consulta(sql)
             if datos_crudos is None:
-                self.mostrar_en_chat("Ocurrio un error al consultar la base de datos.", autor="Sistema")
+                ui(self.mostrar_en_chat, "Ocurrio un error al consultar la base de datos.", "Sistema")
                 return
 
             respuesta_final = self.asistente.formatear_respuesta_humana(pregunta, datos_crudos)
-            self.mostrar_en_chat(respuesta_final, autor="Asistente")
+            ui(self.mostrar_en_chat, respuesta_final, "Asistente")
         finally:
-            self._toggle_input(True)
-            if time.time() < self.ai_blocked_until:
-                segundos = int(self.ai_blocked_until - time.time()) + 1
-                self._set_estado(f"En espera de cuota ({segundos}s)", self.theme["error"])
-            else:
-                self._set_estado("Listo para ayudarte", self.theme["ok"])
-            if self.ent_pregunta:
-                self.ent_pregunta.focus_set()
+            ui(self._finalizar_consulta)
+
+    def _finalizar_consulta(self):
+        """Restaura el estado de la UI tras completar una consulta (siempre en hilo principal)."""
+        self._toggle_input(True)
+        if time.time() < self.ai_blocked_until:
+            segundos = int(self.ai_blocked_until - time.time()) + 1
+            self._set_estado(f"En espera de cuota ({segundos}s)", self.theme["error"])
+        else:
+            self._set_estado("Listo para ayudarte", self.theme["ok"])
+        if self.ent_pregunta:
+            self.ent_pregunta.focus_set()
 
     def mostrar_en_chat(self, mensaje, autor="Asistente"):
         """

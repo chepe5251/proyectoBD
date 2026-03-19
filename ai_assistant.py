@@ -28,7 +28,9 @@ try:
     from google import genai  # SDK principal de última generación.
     from google.genai import errors as genai_errors
     _SDK = "new"
-except ImportError:
+except (ImportError, KeyboardInterrupt):
+    # KeyboardInterrupt puede ocurrir en Windows cuando google-genai tarda demasiado
+    # en importar su types.py (>11 000 lineas). El fallback al SDK legado evita el crash.
     try:
         import google.generativeai as legacy_genai  # Compatibilidad con entornos legados.
         _SDK = "legacy"
@@ -62,11 +64,10 @@ class AIAssistant:
         preferred_model = os.getenv("GEMINI_MODEL")
         self.model_candidates = [
             preferred_model,
-            "gemini-2.5-flash",
-            "gemini-flash-latest",
-            "gemini-2.5-flash-lite",
-            "gemini-flash-lite-latest",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
             "gemini-1.5-flash",
+            "gemini-1.5-flash-8b",
         ]
         self.model_candidates = [m for i, m in enumerate(self.model_candidates) if m and m not in self.model_candidates[:i]]
         self.model_name: str = self.model_candidates[0]
@@ -202,6 +203,27 @@ class AIAssistant:
                 raise AIServiceError(
                     f"Error de servicio Gemini ({exc.code} {exc.status})."
                 ) from exc
+
+            if _SDK == "legacy":
+                exc_str = str(exc)
+                type_name = type(exc).__name__
+                is_quota = (
+                    type_name == "ResourceExhausted"
+                    or "429" in exc_str
+                    or "RESOURCE_EXHAUSTED" in exc_str.upper()
+                )
+                if is_quota:
+                    retry_match = re.search(r"(\d+)s", exc_str)
+                    retry_seconds = int(retry_match.group(1)) if retry_match else None
+                    base_msg = "Gemini sin cuota disponible (429)."
+                    if retry_seconds:
+                        raise AIQuotaExceededError(
+                            f"{base_msg} Reintentar en {retry_seconds} segundos.",
+                            retry_after_seconds=retry_seconds,
+                        ) from exc
+                    raise AIQuotaExceededError(
+                        f"{base_msg} Revisar límites y facturación del proyecto."
+                    ) from exc
 
             raise AIServiceError(f"Error al procesar la solicitud con IA: {exc}") from exc
 

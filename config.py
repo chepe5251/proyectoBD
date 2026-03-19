@@ -12,7 +12,6 @@ Seguridad:
 """
 
 import os
-from typing import Dict
 from dotenv import load_dotenv
 
 # Inicialización: Carga de variables de entorno desde el archivo físico .env en la raíz.
@@ -25,14 +24,21 @@ load_dotenv()
 GEMINI_KEY: str = os.getenv("GEMINI_API_KEY")
 
 # --- Configuración de Infraestructura de Datos (SQL Server) ---
-# Diccionario estructurado que contiene los parámetros necesarios para establecer 
-# una conexión funcional con la instancia de SQL Server (compuale\aleja)[cite: 77, 80].
-DB_CONFIG: Dict[str, str] = {
-    "server": os.getenv("DB_SERVER"),     # Host o instancia del servidor de BD.
-    "database": os.getenv("DB_NAME"),     # Catálogo principal (biblioteca).
-    "user": os.getenv("DB_USER"),         # Identidad para el login (usr_admin/usr_usuario)[cite: 38].
-    "pass": os.getenv("DB_PASS")          # Credencial de autenticación cifrada en el entorno.
-}
+# DB_SERVER y DB_NAME son leídos directamente por database_manager.py via os.getenv().
+# DB_USER / DB_PASS son fallbacks opcionales del DatabaseManager cuando no se provee uid/pwd.
+
+# --- Logins de SQL Server por rol ---
+# Login auxiliar de solo lectura para ejecutar personas.autenticar_usuario.
+SQL_LOGIN_APP:  str = os.getenv("SQL_LOGIN_APP",  "")
+SQL_PASS_APP:   str = os.getenv("SQL_PASS_APP",   "")
+
+# Logins operacionales asignados según el rol autenticado.
+SQL_LOGIN_ADMIN:      str = os.getenv("SQL_LOGIN_ADMIN",      "")
+SQL_PASS_ADMIN:       str = os.getenv("SQL_PASS_ADMIN",       "")
+SQL_LOGIN_OPERATIVO:  str = os.getenv("SQL_LOGIN_OPERATIVO",  "")
+SQL_PASS_OPERATIVO:   str = os.getenv("SQL_PASS_OPERATIVO",   "")
+SQL_LOGIN_USUARIO:    str = os.getenv("SQL_LOGIN_USUARIO",    "")
+SQL_PASS_USUARIO:     str = os.getenv("SQL_PASS_USUARIO",     "")
 
 # --- Validación de Integridad de Runtime ---
 # Protocolo de verificación de arranque para asegurar que las dependencias críticas 

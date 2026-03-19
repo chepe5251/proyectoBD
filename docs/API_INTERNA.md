@@ -13,14 +13,21 @@ Clave de autenticacion para la API de Google Gemini.
 Origen: variable de entorno `GEMINI_API_KEY`.
 
 #### `DB_CONFIG: dict[str, str | None]`
-Parametros de conexion a SQL Server.
+Parametros de conexion a SQL Server (servidor e instancia).
 
 | Llave | Variable de entorno | Descripcion |
 |---|---|---|
 | `server` | `DB_SERVER` | Host o nombre de la instancia SQL Server |
 | `database` | `DB_NAME` | Nombre del catalogo (`biblioteca`) |
-| `user` | `DB_USER` | Login de SQL Server por defecto |
-| `pass` | `DB_PASS` | Contrasena del login por defecto |
+
+#### Variables de logins de SQL Server
+
+| Variable | Descripcion |
+|---|---|
+| `SQL_LOGIN_APP` / `SQL_PASS_APP` | Login auxiliar de solo lectura; unicamente puede ejecutar `personas.autenticar_usuario` |
+| `SQL_LOGIN_ADMIN` / `SQL_PASS_ADMIN` | Login para rol `admin` — acceso completo |
+| `SQL_LOGIN_OPERATIVO` / `SQL_PASS_OPERATIVO` | Login para rol `operativo` — SELECT/INSERT/UPDATE |
+| `SQL_LOGIN_USUARIO` / `SQL_PASS_USUARIO` | Login para rol `usuario` — solo SELECT en catalogo |
 
 ---
 
@@ -87,37 +94,48 @@ Atributos de instancia:
 
 ---
 
-#### `login(usuario, password) -> bool`
+#### `login(correo, password) -> bool`
 
-Autentica al usuario probando una conexion directa a SQL Server.
+Autentica al usuario verificando correo y hash SHA-256 contra `personas.usuarios` via el procedimiento `personas.autenticar_usuario`.
 
 | Parametro | Tipo | Descripcion |
 |---|---|---|
-| `usuario` | `str` | Login de SQL Server (ej. `login_admin`). |
-| `password` | `str` | Contrasena del login. |
+| `correo` | `str` | Correo electronico del usuario. |
+| `password` | `str` | Contrasena en texto plano (la app calcula el hash internamente). |
 
-Retorna `True` si la conexion tiene exito; `False` en caso contrario.
+Flujo interno:
+1. Calcula `hashlib.sha256(password.encode()).hexdigest()`.
+2. Abre conexion temporal con `SQL_LOGIN_APP` / `SQL_PASS_APP`.
+3. Ejecuta `EXEC personas.autenticar_usuario @correo=?, @password_hash=?`.
+4. Si retorna 0 filas → `return False`.
+5. Lee `id_usuario`, `nombre_usuario`, `apellido_usuario`, `correo`, `rol` de la fila.
+6. Selecciona el login de SQL Server segun el rol.
+7. Puebla `self.usuario_actual` y retorna `True`.
+
+Ante cualquier error de conexion retorna `False` con mensaje en consola, sin crashear.
 
 Al autenticarse, puebla `self.usuario_actual`:
 
 ```python
 {
-    "id":     None,            # No aplica (auth via SQL Server)
-    "rol":    "admin",         # Inferido del nombre del login
-    "nombre": "login_admin",   # Nombre del login
-    "uid":    "login_admin",   # Para reconectar DatabaseManager
-    "pwd":    "admin123",
+    "id":       1,                    # id_usuario de personas.usuarios
+    "rol":      "admin",              # rol registrado en la BD
+    "nombre":   "Alejandro",          # nombre_usuario
+    "apellido": "Lopez",              # apellido_usuario
+    "correo":   "aleja@mail.com",     # correo de la BD
+    "uid":      "login_admin",        # login de SQL Server para el rol
+    "pwd":      "Admin#2026!",        # contrasena del login de SQL Server
 }
 ```
 
-Mapeo de login a rol:
+Mapeo de rol a login de SQL Server:
 
-| Login | Rol |
+| Rol | Login seleccionado |
 |---|---|
-| `login_admin` | `admin` |
-| `login_operativo` | `operativo` |
-| `login_usuario` | `usuario` |
-| Cualquier otro | `usuario` |
+| `admin` | `SQL_LOGIN_ADMIN` |
+| `operativo` | `SQL_LOGIN_OPERATIVO` |
+| `usuario` | `SQL_LOGIN_USUARIO` |
+| Cualquier otro | `SQL_LOGIN_USUARIO` (fallback) |
 
 ---
 
@@ -261,16 +279,30 @@ Renderiza la ventana principal de chat con: barra de estado, area de mensajes, b
 
 #### `procesar_consulta()`
 
-Flujo principal de procesamiento. Llamado al presionar Enter o el boton Enviar.
+Punto de entrada del flujo de consulta. Llamado al presionar Enter o el boton Enviar.
 
-1. Verifica bloqueo de cuota de IA.
+Deshabilita los controles de entrada y lanza `_procesar_en_hilo()` en un hilo secundario (`threading.Thread`, daemon=True). Retorna inmediatamente sin bloquear la UI.
+
+---
+
+#### `_procesar_en_hilo(pregunta)`
+
+Ejecuta el flujo completo NL->SQL->DB en un hilo secundario.
+
+1. Verifica bloqueo de cuota de IA (`ai_blocked_until`).
 2. Llama a `AIAssistant.interpretar_pregunta()`.
 3. Normaliza el SQL con `_normalizar_sql()`.
 4. Valida la accion con `SecurityManager.validar_accion()`.
 5. Ejecuta con `DatabaseManager.ejecutar_consulta()`.
 6. Formatea y muestra el resultado.
 
-Bloquea los controles de entrada durante el procesamiento y los restaura en el bloque `finally`.
+Todas las actualizaciones de la UI se despachan al hilo principal con `root.after(0, callback)`. El bloque `finally` siempre llama a `_finalizar_consulta()` para restaurar los controles.
+
+---
+
+#### `_finalizar_consulta()`
+
+Restaura el estado de la UI tras completar una consulta. Siempre se ejecuta en el hilo principal. Habilita controles, actualiza el indicador de estado y devuelve el foco al campo de entrada.
 
 ---
 
