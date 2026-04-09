@@ -12,9 +12,6 @@ Responsabilidades:
 import os
 
 import pyodbc
-from dotenv import load_dotenv
-
-load_dotenv()
 
 
 class DatabaseManager:
@@ -34,13 +31,16 @@ class DatabaseManager:
             uid (str | None): Login de SQL Server. Si es None, usa DB_USER del .env.
             pwd (str | None): Contrasena del login. Si es None, usa DB_PASS del .env.
         """
+        # DB_TRUST_CERT=yes solo en desarrollo local. En produccion usar certificado valido.
+        trust_cert = os.getenv("DB_TRUST_CERT", "no")
         self.conn_str = (
             f"DRIVER={{ODBC Driver 17 for SQL Server}};"
             f"SERVER={os.getenv('DB_SERVER')};"
             f"DATABASE={os.getenv('DB_NAME')};"
             f"UID={uid or os.getenv('DB_USER')};"
             f"PWD={pwd or os.getenv('DB_PASS')};"
-            "TrustServerCertificate=yes;"
+            f"TrustServerCertificate={trust_cert};"
+            "Connection Timeout=5;"
         )
 
     def probar_conexion(self) -> bool:
@@ -54,7 +54,7 @@ class DatabaseManager:
         necesidad de almacenar contrasenas en la aplicacion.
         """
         try:
-            with pyodbc.connect(self.conn_str):
+            with pyodbc.connect(self.conn_str, timeout=5):
                 return True
         except Exception:
             return False
@@ -63,13 +63,14 @@ class DatabaseManager:
     def _count_placeholders(sql: str) -> int:
         return sql.count("?")
 
-    def ejecutar_consulta(self, sql, params=None):
+    def ejecutar_consulta(self, sql, params=None, max_rows: int = 100):
         """
         Ejecuta una sentencia T-SQL contra la base de datos.
 
         Args:
             sql (str): Sentencia T-SQL a ejecutar.
             params (tuple | list | None): Valores para los placeholders '?'.
+            max_rows (int): Maximo de filas a retornar en SELECT (default 100).
 
         Returns:
             list[Row]: Filas del resultset para SELECT y vistas.
@@ -87,16 +88,16 @@ class DatabaseManager:
             return None
 
         try:
-            with pyodbc.connect(self.conn_str) as conn:
+            with pyodbc.connect(self.conn_str, timeout=5) as conn:
                 cursor = conn.cursor()
                 if params:
                     cursor.execute(sql, *params)
                 else:
                     cursor.execute(sql)
 
-                # Si la sentencia devuelve columnas, retornamos filas.
+                # Si la sentencia devuelve columnas, retornamos filas limitadas.
                 if cursor.description is not None:
-                    return cursor.fetchall()
+                    return cursor.fetchmany(max_rows)
 
                 conn.commit()
                 return "Operacion completada exitosamente."

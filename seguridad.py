@@ -3,7 +3,7 @@ Modulo: seguridad.py
 Descripcion: Autenticacion y control de acceso basado en roles (RBAC).
 
 Responsabilidades:
-    - Autenticar usuarios verificando correo y hash SHA-256 de contraseña
+    - Autenticar usuarios verificando correo y hash bcrypt de la contraseña
       contra la tabla personas.usuarios mediante el procedimiento almacenado
       personas.autenticar_usuario.
     - La conexion de autenticacion usa un login auxiliar de solo lectura
@@ -15,11 +15,21 @@ Responsabilidades:
 
 Roles soportados:
     - admin:      sin restricciones adicionales en aplicacion.
-    - operativo:  bloquea DROP, ALTER, CREATE DATABASE.
-    - usuario:    solo SELECT; bloquea todo DML de escritura y DDL.
+    - operativo:  bloquea DDL y comandos destructivos globales.
+    - usuario:    solo SELECT/WITH; bloquea todo DML de escritura y DDL.
 """
 
-import hashlib
+import threading
+import time
+
+import bcrypt
+
+
+# ---------------------------------------------------------------------------
+# Constantes de proteccion contra fuerza bruta
+# ---------------------------------------------------------------------------
+_MAX_INTENTOS = 5          # Intentos fallidos antes de bloquear
+_LOCKOUT_SEGUNDOS = 30     # Segundos de bloqueo tras superar el limite
 
 
 class SecurityManager:
@@ -27,11 +37,14 @@ class SecurityManager:
     Gestiona autenticacion y autorizacion basada en roles para la aplicacion
     de biblioteca.
 
-    La autenticacion verifica correo y contraseña contra personas.usuarios
-    mediante el procedimiento almacenado personas.autenticar_usuario, usando
-    un login auxiliar de solo lectura. El login operacional de SQL Server se
-    selecciona segun el rol registrado en la base de datos.
+    La autenticacion obtiene el hash bcrypt desde la BD por correo y lo
+    verifica en Python. El login operacional de SQL Server se selecciona
+    segun el rol registrado en la base de datos.
     """
+
+    # Estado de intentos fallidos compartido entre instancias (nivel de clase).
+    _failed_attempts: dict = {}   # {correo: (count, lockout_until)}
+    _attempts_lock = threading.Lock()
 
     def __init__(self, db_manager):
         """
@@ -41,27 +54,62 @@ class SecurityManager:
         self.db = db_manager
         self.usuario_actual = None
 
+    # ------------------------------------------------------------------
+    # Helpers de fuerza bruta
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _registrar_fallo(cls, correo: str) -> None:
+        with cls._attempts_lock:
+            count, lockout_until = cls._failed_attempts.get(correo, (0, 0))
+            count += 1
+            if count >= _MAX_INTENTOS:
+                lockout_until = time.time() + _LOCKOUT_SEGUNDOS
+                count = 0   # Reiniciar contador para que el siguiente ciclo funcione
+            cls._failed_attempts[correo] = (count, lockout_until)
+
+    @classmethod
+    def _esta_bloqueado(cls, correo: str) -> tuple[bool, int]:
+        """
+        Returns:
+            (bloqueado, segundos_restantes)
+        """
+        with cls._attempts_lock:
+            _count, lockout_until = cls._failed_attempts.get(correo, (0, 0))
+            if time.time() < lockout_until:
+                return True, int(lockout_until - time.time()) + 1
+        return False, 0
+
+    @classmethod
+    def _limpiar_intentos(cls, correo: str) -> None:
+        with cls._attempts_lock:
+            cls._failed_attempts.pop(correo, None)
+
+    # ------------------------------------------------------------------
+    # Autenticacion
+    # ------------------------------------------------------------------
+
     def login(self, correo, password):
         """
         Autentica al usuario verificando sus credenciales contra la BD.
 
         Flujo:
-        1. Calcula SHA-256 (hexdigest minusculas) de la contraseña.
+        1. Verifica si el correo esta bloqueado por fuerza bruta.
         2. Abre conexion temporal con SQL_LOGIN_APP (login auxiliar de solo
            lectura para autenticar).
-        3. Ejecuta EXEC personas.autenticar_usuario con correo y hash.
-        4. Si retorna 0 filas, las credenciales son incorrectas.
-        5. Si retorna 1 fila, lee id, nombre, apellido, correo y rol.
-        6. Selecciona el login de SQL Server correspondiente al rol.
-        7. Puebla self.usuario_actual con todos los datos de sesion.
+        3. Ejecuta EXEC personas.autenticar_usuario @correo=? y obtiene el
+           hash bcrypt almacenado junto con los datos del usuario.
+        4. Verifica la contraseña con bcrypt.checkpw en Python.
+        5. Si la verificacion falla, registra el intento fallido.
+        6. Si es exitosa, selecciona el login de SQL Server por rol y
+           puebla self.usuario_actual.
 
         Args:
             correo   (str): Correo electronico del usuario.
-            password (str): Contraseña en texto plano.
+            password (str): Contraseña en texto plano (sin strip previo).
 
         Returns:
             bool: True si la autenticacion es exitosa, False en caso contrario.
-                  Ante cualquier error de conexion retorna False sin crashear.
         """
         from database_manager import DatabaseManager
         from config import (
@@ -71,14 +119,19 @@ class SecurityManager:
             SQL_LOGIN_USUARIO, SQL_PASS_USUARIO,
         )
 
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        # --- Proteccion fuerza bruta ---
+        bloqueado, segundos = self._esta_bloqueado(correo)
+        if bloqueado:
+            print(f"Login bloqueado por {segundos}s para: {correo}")
+            return False
 
-        # Conexion auxiliar: solo puede ejecutar personas.autenticar_usuario.
+        # --- Conexion auxiliar: solo puede ejecutar personas.autenticar_usuario ---
         try:
             db_app = DatabaseManager(uid=SQL_LOGIN_APP, pwd=SQL_PASS_APP)
             filas = db_app.ejecutar_consulta(
-                "EXEC personas.autenticar_usuario @correo=?, @password_hash=?",
-                (correo, password_hash),
+                "EXEC personas.autenticar_usuario @correo=?",
+                (correo,),
+                max_rows=1,
             )
         except Exception as exc:
             print(f"Error inesperado en la conexion auxiliar de autenticacion: {exc}")
@@ -92,23 +145,40 @@ class SecurityManager:
             return False
 
         if not filas:
+            self._registrar_fallo(correo)
             return False
 
         fila = filas[0]
-        id_usuario, nombre, apellido, correo_db, rol = (
-            fila[0], fila[1], fila[2], fila[3], fila[4]
+        id_usuario, nombre, apellido, correo_db, rol, stored_hash = (
+            fila[0], fila[1], fila[2], fila[3], fila[4], fila[5]
         )
+
+        # --- Verificacion bcrypt en Python ---
+        try:
+            hash_bytes = stored_hash.encode() if isinstance(stored_hash, str) else stored_hash
+            if not bcrypt.checkpw(password.encode(), hash_bytes):
+                self._registrar_fallo(correo)
+                return False
+        except Exception:
+            self._registrar_fallo(correo)
+            return False
+
+        # --- Login exitoso: limpiar intentos y construir sesion ---
+        self._limpiar_intentos(correo)
+
+        # Normalizar rol para consistencia interna
+        rol_normalizado = "admin" if rol in ("admin", "administrador") else rol
 
         _login_map = {
             "admin":     (SQL_LOGIN_ADMIN,     SQL_PASS_ADMIN),
             "operativo": (SQL_LOGIN_OPERATIVO, SQL_PASS_OPERATIVO),
             "usuario":   (SQL_LOGIN_USUARIO,   SQL_PASS_USUARIO),
         }
-        uid, pwd = _login_map.get(rol, (SQL_LOGIN_USUARIO, SQL_PASS_USUARIO))
+        uid, pwd = _login_map.get(rol_normalizado, (SQL_LOGIN_USUARIO, SQL_PASS_USUARIO))
 
         self.usuario_actual = {
             "id":       id_usuario,
-            "rol":      rol,
+            "rol":      rol_normalizado,
             "nombre":   nombre,
             "apellido": apellido,
             "correo":   correo_db,
@@ -117,35 +187,96 @@ class SecurityManager:
         }
         return True
 
+    # ------------------------------------------------------------------
+    # RBAC
+    # ------------------------------------------------------------------
+
+    # Comandos siempre bloqueados para todos los roles excepto admin.
+    _SIEMPRE_BLOQUEADO = {
+        "SHUTDOWN", "DBCC", "XACT", "KILL", "BULK INSERT",
+        "OPENROWSET", "OPENDATASOURCE", "EXEC XP_", "EXECUTE XP_",
+    }
+
+    # Comandos bloqueados para rol 'usuario' (solo lectura).
+    _BLOQUEADO_USUARIO = {
+        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
+        "TRUNCATE", "MERGE", "GRANT", "REVOKE", "EXEC", "EXECUTE",
+        "BACKUP", "RESTORE",
+    }
+
+    # Comandos bloqueados para rol 'operativo' (gestion sin DDL).
+    _BLOQUEADO_OPERATIVO = {
+        "DROP", "ALTER", "CREATE DATABASE", "CREATE TABLE", "CREATE SCHEMA",
+        "TRUNCATE", "GRANT", "REVOKE", "BACKUP", "RESTORE",
+    }
+
     def validar_accion(self, sql_generado):
         """
         Verifica si el SQL generado por la IA esta permitido para el rol actual.
+
+        Ademas de la lista de comandos bloqueados, valida que la sentencia
+        comience con una palabra clave reconocida segun el rol.
 
         Args:
             sql_generado (str): Sentencia T-SQL a evaluar.
 
         Returns:
             bool: True si la accion esta autorizada, False si debe bloquearse.
-
-        Este control es la segunda linea de defensa: el motor de base de datos
-        aplica sus propios permisos independientemente de este metodo.
         """
         if not self.usuario_actual:
             return False
 
         rol = self.usuario_actual["rol"]
-        sql = str(sql_generado).upper()
+        sql_upper = str(sql_generado).upper().strip()
+
+        # Rechazar SQL vacio o multi-sentencia (punto y coma separador).
+        if not sql_upper:
+            return False
+        if self._tiene_multiples_sentencias(sql_upper):
+            return False
+
+        # Admin: sin restricciones adicionales en aplicacion (SQL Server aplica las suyas).
+        if rol == "admin":
+            return True
+
+        # Comandos siempre peligrosos (todos los roles no-admin).
+        for cmd in self._SIEMPRE_BLOQUEADO:
+            if cmd in sql_upper:
+                return False
 
         if rol == "usuario":
-            # Solo lectura. No permite DML de escritura ni DDL.
-            if any(cmd in sql for cmd in ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER"]):
+            # Solo lectura: debe comenzar con SELECT o WITH.
+            if not (sql_upper.startswith("SELECT") or sql_upper.startswith("WITH")):
                 return False
+            for cmd in self._BLOQUEADO_USUARIO:
+                if cmd in sql_upper:
+                    return False
+
         elif rol == "operativo":
-            # Permite gestion de datos, pero no cambios estructurales.
-            if any(cmd in sql for cmd in ["DROP", "ALTER", "CREATE DATABASE"]):
-                return False
+            # Gestion de datos sin DDL estructural.
+            for cmd in self._BLOQUEADO_OPERATIVO:
+                if cmd in sql_upper:
+                    return False
 
         return True
+
+    @staticmethod
+    def _tiene_multiples_sentencias(sql_upper: str) -> bool:
+        """
+        Detecta si el SQL contiene mas de una sentencia separada por ';'.
+        Ignora ';' dentro de literales de cadena simples.
+        """
+        en_cadena = False
+        for char in sql_upper:
+            if char == "'":
+                en_cadena = not en_cadena
+            elif char == ";" and not en_cadena:
+                return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Descripcion de permisos
+    # ------------------------------------------------------------------
 
     def describir_permisos(self):
         """
@@ -169,7 +300,7 @@ class SecurityManager:
                 "Tu rol operativo permite consultar y actualizar datos, "
                 "sin cambios estructurales de la base."
             )
-        if rol in ["admin", "administrador"]:
+        if rol == "admin":
             return (
                 "Tu rol administrador permite operaciones completas segun "
                 "las politicas del sistema."

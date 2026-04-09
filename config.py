@@ -12,6 +12,7 @@ Seguridad:
 """
 
 import os
+import sys
 from dotenv import load_dotenv
 
 # Inicialización: Carga de variables de entorno desde el archivo físico .env en la raíz.
@@ -21,7 +22,7 @@ load_dotenv()
 # --- Configuración de Inteligencia Artificial (AI Engine) ---
 # Clave API (Token) requerida para la autenticación con los servicios de Google Gemini.
 # Se extrae del entorno para evitar la exposición de secretos en el control de versiones.
-GEMINI_KEY: str = os.getenv("GEMINI_API_KEY")
+GEMINI_KEY: str | None = os.getenv("GEMINI_API_KEY")
 
 # --- Configuración de Infraestructura de Datos (SQL Server) ---
 # DB_SERVER y DB_NAME son leídos directamente por database_manager.py via os.getenv().
@@ -45,3 +46,4 @@ SQL_PASS_USUARIO:     str = os.getenv("SQL_PASS_USUARIO",     "")
 # estén presentes antes de la ejecución del sistema[cite: 102].
 if not GEMINI_KEY:
     print("CRITICAL_ERROR: Fallo en la inicialización. GEMINI_API_KEY no detectada en el entorno.")
+    sys.exit(1)

@@ -28,9 +28,7 @@ try:
     from google import genai  # SDK principal de última generación.
     from google.genai import errors as genai_errors
     _SDK = "new"
-except (ImportError, KeyboardInterrupt):
-    # KeyboardInterrupt puede ocurrir en Windows cuando google-genai tarda demasiado
-    # en importar su types.py (>11 000 lineas). El fallback al SDK legado evita el crash.
+except ImportError:
     try:
         import google.generativeai as legacy_genai  # Compatibilidad con entornos legados.
         _SDK = "legacy"

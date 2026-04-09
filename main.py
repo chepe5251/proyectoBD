@@ -66,10 +66,11 @@ class BibliotecaApp:
         self.root.configure(bg=self.theme["bg"])
 
         # Servicios.
-        self.db = None  # Se construye con las credenciales del usuario tras el login.
-        self.asistente = AIAssistant()
+        self.db = None       # Se construye con las credenciales del usuario tras el login.
+        self.asistente = None  # Se instancia despues del login exitoso.
         self.seguridad = None
         self.ai_blocked_until = 0.0
+        self._ai_lock = threading.Lock()
 
         self.btn_enviar = None
         self.ent_pregunta = None
@@ -211,7 +212,7 @@ class BibliotecaApp:
     def ejecutar_login(self):
         """Valida credenciales y abre el chat principal."""
         correo = self.ent_correo.get().strip()
-        password = self.ent_pass.get().strip()
+        password = self.ent_pass.get()  # Sin strip: espacios son parte de la contraseña
 
         if not correo or not password:
             messagebox.showwarning("Datos requeridos", "Debes ingresar correo y contrasena.")
@@ -222,6 +223,11 @@ class BibliotecaApp:
             info = self.seguridad.usuario_actual
             self.db = DatabaseManager(uid=info["uid"], pwd=info["pwd"])
             self.seguridad.db = self.db
+            try:
+                self.asistente = AIAssistant()
+            except ValueError as exc:
+                messagebox.showerror("Error de configuracion", str(exc))
+                return
             self.pantalla_asistente()
             return
 
@@ -507,10 +513,16 @@ class BibliotecaApp:
         def ui(fn, *args):
             self.root.after(0, fn, *args)
 
+        if self.asistente is None or self.db is None:
+            ui(self.mostrar_en_chat, "Sesion no inicializada correctamente.", "Sistema")
+            return
+
         try:
+            with self._ai_lock:
+                blocked_until = self.ai_blocked_until
             ahora = time.time()
-            if ahora < self.ai_blocked_until:
-                segundos = int(self.ai_blocked_until - ahora) + 1
+            if ahora < blocked_until:
+                segundos = int(blocked_until - ahora) + 1
                 ui(self.mostrar_en_chat,
                    f"La IA esta temporalmente sin cuota. Intenta de nuevo en {segundos} segundos.",
                    "Sistema")
@@ -520,7 +532,8 @@ class BibliotecaApp:
                 sql = self.asistente.interpretar_pregunta(pregunta)
             except AIQuotaExceededError as exc:
                 retry_after = exc.retry_after_seconds or 30
-                self.ai_blocked_until = time.time() + retry_after
+                with self._ai_lock:
+                    self.ai_blocked_until = time.time() + retry_after
                 ui(self.mostrar_en_chat, str(exc), "Sistema")
                 return
             except AIServiceError as exc:
@@ -544,6 +557,10 @@ class BibliotecaApp:
                    "Sistema")
                 return
 
+            # Limitar resultados en SELECT sin TOP para evitar traer toda la tabla.
+            if re.match(r"^\s*SELECT\s+(?!TOP\s)", sql, re.IGNORECASE):
+                sql = re.sub(r"(?i)^(\s*SELECT\s+)", r"\1TOP 100 ", sql, count=1)
+
             datos_crudos = self.db.ejecutar_consulta(sql)
             if datos_crudos is None:
                 ui(self.mostrar_en_chat, "Ocurrio un error al consultar la base de datos.", "Sistema")
@@ -556,14 +573,20 @@ class BibliotecaApp:
 
     def _finalizar_consulta(self):
         """Restaura el estado de la UI tras completar una consulta (siempre en hilo principal)."""
-        self._toggle_input(True)
-        if time.time() < self.ai_blocked_until:
-            segundos = int(self.ai_blocked_until - time.time()) + 1
-            self._set_estado(f"En espera de cuota ({segundos}s)", self.theme["error"])
-        else:
-            self._set_estado("Listo para ayudarte", self.theme["ok"])
-        if self.ent_pregunta:
-            self.ent_pregunta.focus_set()
+        try:
+            self._toggle_input(True)
+            with self._ai_lock:
+                blocked_until = self.ai_blocked_until
+            if time.time() < blocked_until:
+                segundos = int(blocked_until - time.time()) + 1
+                self._set_estado(f"En espera de cuota ({segundos}s)", self.theme["error"])
+            else:
+                self._set_estado("Listo para ayudarte", self.theme["ok"])
+            if self.ent_pregunta:
+                self.ent_pregunta.focus_set()
+        except Exception:
+            # Widgets destruidos por cambio de pantalla antes de que el hilo finalizara.
+            pass
 
     def mostrar_en_chat(self, mensaje, autor="Asistente"):
         """
