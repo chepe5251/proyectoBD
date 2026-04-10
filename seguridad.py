@@ -271,13 +271,17 @@ class SecurityManager:
         """
         Detecta si el SQL contiene mas de una sentencia separada por ';'.
         Ignora ';' dentro de literales de cadena simples.
+        Ignora ';' al final del string (trailing semicolon permitido).
         """
+        sql = sql_upper.strip()
         en_cadena = False
-        for char in sql_upper:
+        for i, char in enumerate(sql):
             if char == "'":
                 en_cadena = not en_cadena
             elif char == ";" and not en_cadena:
-                return True
+                # Solo rechazar si hay contenido real despues del punto y coma
+                if sql[i + 1:].strip():
+                    return True
         return False
 
     # ------------------------------------------------------------------

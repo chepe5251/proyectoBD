@@ -88,6 +88,8 @@ class BibliotecaApp:
         self.ent_reg_password = None
         self.ent_reg_confirmar = None
 
+        self.historial_conversacion = []
+
         from config import GEMINI_KEY
         if not GEMINI_KEY:
             self.pantalla_error_config()
@@ -908,7 +910,7 @@ class BibliotecaApp:
                 return
 
             try:
-                sql = self.asistente.interpretar_pregunta(pregunta)
+                sql_raw = self.asistente.interpretar_pregunta(pregunta, self.historial_conversacion)
             except AIQuotaExceededError as exc:
                 retry_after = exc.retry_after_seconds or 30
                 with self._ai_lock:
@@ -919,8 +921,43 @@ class BibliotecaApp:
                 ui(self.mostrar_en_chat, f"Error de IA: {exc}", "Sistema")
                 return
 
-            sql = self._normalizar_sql(sql)
             modelo = self.asistente.model_name
+
+            # Respuesta conversacional: la IA pide mas datos al usuario.
+            if sql_raw.upper().startswith("PEDIR:"):
+                pregunta_ia = sql_raw[6:].strip()
+                self.historial_conversacion.append({"rol": "usuario", "texto": pregunta})
+                self.historial_conversacion.append({"rol": "asistente", "texto": f"PEDIR: {pregunta_ia}"})
+                ui(self.mostrar_sql, f"[Recopilando informacion]\n{pregunta_ia}", modelo, "Recopilando informacion")
+                ui(self.mostrar_en_chat, pregunta_ia, "Asistente")
+                return
+
+            # Respuesta conversacional: la IA da una instruccion o explicacion sin SQL.
+            if sql_raw.upper().startswith("INSTRUCCION:"):
+                mensaje_ia = sql_raw[12:].strip()
+                self.historial_conversacion.append({"rol": "usuario", "texto": pregunta})
+                self.historial_conversacion.append({"rol": "asistente", "texto": f"INSTRUCCION: {mensaje_ia}"})
+                ui(self.mostrar_sql, f"[Instruccion al usuario]\n{mensaje_ia}", modelo, "Instruccion al usuario")
+                ui(self.mostrar_en_chat, mensaje_ia, "Asistente")
+                return
+
+            # Registro con contrasena: la IA devuelve el EXEC con password en texto plano.
+            pending_hash = False
+            if sql_raw.upper().startswith("PENDING_HASH:"):
+                pending_hash = True
+                sql_raw = sql_raw[13:].strip()
+
+            sql = self._normalizar_sql(sql_raw)
+
+            # Sustituir contrasena en texto plano por hash bcrypt antes de ejecutar.
+            if pending_hash and sql:
+                match_pw = re.search(r"@password_hash\s*=\s*'([^']*)'", sql, re.IGNORECASE)
+                if match_pw:
+                    import bcrypt as _bcrypt
+                    raw_password = match_pw.group(1)
+                    pw_hash = _bcrypt.hashpw(raw_password.encode(), _bcrypt.gensalt(rounds=12)).decode()
+                    sql = sql[:match_pw.start(1)] + pw_hash + sql[match_pw.end(1):]
+
             if not sql:
                 ui(self.mostrar_sql, "(no se genero SQL valido)", modelo, "")
                 ui(self.mostrar_en_chat, "No se pudo generar una consulta valida.", "Sistema")
@@ -955,6 +992,12 @@ class BibliotecaApp:
             ui(self.mostrar_sql, sql, modelo, "✓ Ejecutado correctamente")
             respuesta_final = self.asistente.formatear_respuesta_humana(pregunta, datos_crudos)
             ui(self.mostrar_en_chat, respuesta_final, "Asistente")
+
+            # Actualizar historial conversacional (ultimas 10 entradas).
+            self.historial_conversacion.append({"rol": "usuario", "texto": pregunta})
+            self.historial_conversacion.append({"rol": "asistente", "texto": sql})
+            if len(self.historial_conversacion) > 10:
+                self.historial_conversacion = self.historial_conversacion[-10:]
         finally:
             ui(self._finalizar_consulta)
 
@@ -1008,6 +1051,7 @@ class BibliotecaApp:
         self.txt_chat.see(tk.END)
 
     def limpiar_pantalla(self):
+        self.historial_conversacion = []
         for widget in self.root.winfo_children():
             widget.destroy()
 

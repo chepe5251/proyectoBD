@@ -62,12 +62,13 @@ class AIAssistant:
         preferred_model = os.getenv("GEMINI_MODEL")
         self.model_candidates = [
             preferred_model,
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
             "gemini-2.0-flash",
             "gemini-2.0-flash-lite",
-            "gemini-1.5-flash",
-            "gemini-1.5-flash-8b",
         ]
-        self.model_candidates = [m for i, m in enumerate(self.model_candidates) if m and m not in self.model_candidates[:i]]
+        self.model_candidates = [m for i, m in enumerate(self.model_candidates)
+                                 if m and m not in self.model_candidates[:i]]
         self.model_name: str = self.model_candidates[0]
 
         # Inicialización del cliente según el SDK detectado en tiempo de ejecución.
@@ -111,6 +112,22 @@ class AIAssistant:
         - Para fechas usa el formato 'YYYY-MM-DD'.
         - Usa las vistas cuando la consulta requiera datos de multiples tablas.
 
+        Flujo conversacional:
+        - Si necesitas mas datos para completar una accion, responde PEDIR: seguido de la pregunta al usuario.
+          Ejemplo: PEDIR: ¿Cual es el ID del libro que deseas prestar?
+        - Si la accion no requiere SQL (saludo, explicacion, aclaracion), responde INSTRUCCION: seguido del mensaje.
+          Ejemplo: INSTRUCCION: Para buscar un libro necesito que me indiques el titulo o autor.
+        - Para registrar un usuario con contrasena, usa el prefijo PENDING_HASH: seguido del EXEC completo,
+          poniendo la contrasena en texto plano en el campo @password_hash. El sistema generara el hash bcrypt.
+          Ejemplo: PENDING_HASH:EXEC personas.registrar_usuario @nombre='Ana', @apellido='Lopez',
+                   @correo='ana@mail.com', @telefono='88881234', @password_hash='MiClave123', @rol='usuario'
+
+        Requisitos de datos por operacion:
+        - Registrar usuario: nombre, apellido, correo, telefono, contrasena y rol.
+        - Registrar prestamo: id_usuario e id_libro.
+        - Devolver libro: id_prestamo.
+        - Buscar libro: palabra clave de busqueda.
+
         """
 
     @staticmethod
@@ -137,22 +154,44 @@ class AIAssistant:
 
         return None
 
-    def interpretar_pregunta(self, pregunta_usuario: str) -> str:
+    def interpretar_pregunta(self, pregunta_usuario: str, historial: list = None) -> str:
         """
         Transforma una consulta en lenguaje natural en una sentencia T-SQL ejecutable.
 
         Args:
             pregunta_usuario (str): Entrada de texto proporcionada por el usuario final.
+            historial (list, optional): Lista de dicts con claves 'rol' ('usuario'/'asistente')
+                                        y 'texto', para mantener contexto conversacional.
 
         Returns:
-            str: Sentencia SQL sintetizada por el modelo de IA.
-            
+            str: Sentencia SQL, prefijo PEDIR:, INSTRUCCION: o PENDING_HASH: segun el caso.
+
         Note:
             La calidad del SQL generado depende directamente de la claridad del prompt del usuario
             y de la estructura definida en el atributo self.contexto.
         """
+        # Construccion del bloque de historial conversacional.
+        historial_texto = ""
+        if historial:
+            entradas = []
+            for entrada in historial:
+                if isinstance(entrada, dict):
+                    rol = entrada.get("rol", "asistente")
+                    texto = entrada.get("texto", "")
+                    prefijo = "Usuario" if rol == "usuario" else "Asistente"
+                    entradas.append(f"{prefijo}: {texto}")
+                elif isinstance(entrada, str):
+                    entradas.append(entrada)
+            historial_texto = "\n".join(entradas)
+
         # Estructuración del prompt final (Prompt Engineering).
-        prompt_final: str = f"{self.contexto}\nUsuario dice: {pregunta_usuario}\nSQL:"
+        if historial_texto:
+            prompt_final: str = (
+                f"{self.contexto}\n\nHistorial de conversacion:\n{historial_texto}\n"
+                f"Usuario dice: {pregunta_usuario}\nSQL o INSTRUCCION:"
+            )
+        else:
+            prompt_final: str = f"{self.contexto}\nUsuario dice: {pregunta_usuario}\nSQL o INSTRUCCION:"
         
         try:
             if _SDK == "new":

@@ -33,7 +33,7 @@ End If
 
 ' 4. Establecer directorio de trabajo y lanzar la app sin consola
 oShell.CurrentDirectory = carpeta
-oShell.Run "pythonw main.py", 0, False
+oShell.Run """" & carpeta & ".venv\Scripts\pythonw.exe"" main.py", 0, False
 
 ' 5. Manejo de error inesperado
 If Err.Number <> 0 Then
