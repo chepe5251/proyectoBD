@@ -38,11 +38,11 @@ El sistema sigue una arquitectura de capas con separacion clara de responsabilid
 ### 1. Capa de Configuracion — `config.py`
 
 Responsabilidades:
-- Cargar el archivo `.env` al importarse.
-- Exponer `GEMINI_KEY` y `DB_CONFIG` al resto del sistema.
-- Emitir advertencia en consola si `GEMINI_API_KEY` no esta presente.
+- Cargar el archivo `.env` al importarse (via `python-dotenv`).
+- Exponer `GEMINI_KEY` y los logins de SQL Server al resto del sistema.
+- Emitir advertencias de log (`logging.WARNING`) si alguna variable critica esta ausente o vacia.
 
-No tiene dependencias internas. Es importada por `ai_assistant.py` y `database_manager.py`.
+No tiene dependencias internas. Es importada por `ai_assistant.py`, `seguridad.py` y `main.py`.
 
 ---
 
@@ -51,19 +51,22 @@ No tiene dependencias internas. Es importada por `ai_assistant.py` y `database_m
 Responsabilidades:
 - Inicializar el cliente de Google Gemini con fallback entre SDK nuevo (`google-genai`) y SDK legado (`google-generativeai`).
 - Mantener el contexto de dominio: tablas, vistas y procedimientos autorizados de la base `biblioteca`.
-- Traducir preguntas en lenguaje natural a T-SQL ejecutable.
+- Mantener el historial conversacional para dar contexto a cada pregunta (ultimos 10 turnos).
+- Traducir preguntas en lenguaje natural a T-SQL ejecutable, o retornar prefijos especiales:
+  - `PEDIR:` cuando necesita datos adicionales del usuario.
+  - `INSTRUCCION:` cuando la respuesta no requiere SQL.
+  - `PENDING_HASH:` cuando el SQL incluye una contrasena en texto plano que debe ser hasheada con bcrypt antes de ejecutar.
 - Formatear resultados crudos de la base de datos en texto legible para el usuario.
-- Gestionar errores de cuota (429) y modelos no disponibles (404).
+- Gestionar errores de cuota (429) y modelos no disponibles (404) con fallback automatico.
 
 Patron de diseno: Adaptador para multiples versiones del SDK de Google.
 
-Candidatos de modelo (en orden de preferencia):
-1. Valor de `GEMINI_MODEL` en `.env` (si existe).
+Candidatos de modelo (en orden de preferencia, definidos en `__init__`):
+1. Valor de `GEMINI_MODEL` en `.env` (si existe y no es duplicado).
 2. `gemini-2.5-flash`
-3. `gemini-flash-latest`
-4. `gemini-2.5-flash-lite`
-5. `gemini-flash-lite-latest`
-6. `gemini-1.5-flash`
+3. `gemini-2.5-pro`
+4. `gemini-2.0-flash`
+5. `gemini-2.0-flash-lite`
 
 Si un modelo retorna 404, el sistema prueba automaticamente el siguiente candidato.
 
@@ -76,6 +79,7 @@ Responsabilidades:
 - Verificar la validez de una conexion (`probar_conexion`).
 - Ejecutar sentencias SQL parametrizadas o sin parametros.
 - Retornar filas para sentencias con resultset o confirmacion de texto para DML/DDL.
+- Registrar errores con `logging` sin exponer datos sensibles de la cadena de conexion.
 
 Cada llamada a `ejecutar_consulta` abre y cierra su propia conexion para simplificar el manejo de estado.
 
@@ -84,32 +88,49 @@ Cada llamada a `ejecutar_consulta` abre y cierra su propia conexion para simplif
 ### 4. Capa de Seguridad — `seguridad.py`
 
 Responsabilidades:
-- Autenticar al usuario verificando correo y hash SHA-256 de contrasena contra `personas.usuarios` mediante el procedimiento `personas.autenticar_usuario`, usando un login auxiliar de solo lectura (`SQL_LOGIN_APP`).
+- Autenticar al usuario: obtiene el hash bcrypt almacenado en `personas.usuarios` por correo
+  (via `personas.autenticar_usuario` con el login auxiliar `SQL_LOGIN_APP`) y verifica la
+  contrasena con `bcrypt.checkpw()` en Python. Nunca se transmite ni almacena la contrasena en claro.
+- Proteger contra fuerza bruta: bloqueo automatico de 30 segundos tras 5 intentos fallidos
+  consecutivos por correo (estado compartido a nivel de clase con `threading.Lock`).
 - Seleccionar el login de SQL Server correspondiente al rol obtenido de la base de datos.
 - Poblar `self.usuario_actual` con id, nombre, apellido, correo, rol y credenciales operacionales.
-- Validar el SQL generado por la IA contra las restricciones del rol antes de ejecutarlo.
+- Validar el SQL generado por la IA contra las restricciones del rol antes de ejecutarlo (segunda capa de defensa).
 
 Dos niveles de control de acceso:
 - **Nivel motor**: SQL Server aplica los permisos del login seleccionado segun rol.
-- **Nivel aplicacion**: `validar_accion()` bloquea comandos destructivos segun el rol.
+- **Nivel aplicacion**: `validar_accion()` bloquea comandos segun el rol.
 
 | Rol | Restricciones en aplicacion |
-|---|---|
-| usuario | Bloquea INSERT, UPDATE, DELETE, DROP, ALTER |
-| operativo | Bloquea DROP, ALTER, CREATE DATABASE |
-| admin | Sin restricciones adicionales en aplicacion |
+|-----|----------------------------|
+| `usuario` | Solo acepta SQL que comience con SELECT o WITH. Bloquea: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, MERGE, GRANT, REVOKE, EXEC, EXECUTE, BACKUP, RESTORE |
+| `operativo` | Bloquea: DROP, ALTER, CREATE DATABASE, CREATE TABLE, CREATE SCHEMA, TRUNCATE, GRANT, REVOKE, BACKUP, RESTORE |
+| `admin` | Sin restricciones adicionales en la aplicacion (SQL Server aplica los suyos) |
+
+Para **todos** los roles se bloquea adicionalmente:
+- Sentencias con multiples instrucciones separadas por `;` (con contenido real tras el punto y coma)
+- Patrones de SQL injection: `OR '1'='1'`, `OR 1=1`, `' OR '`, `--`, `/*`, `*/`, `WAITFOR DELAY`, `XP_CMDSHELL`
+- Comandos siempre peligrosos: `SHUTDOWN`, `DBCC`, `XACT`, `KILL`, `BULK INSERT`, `OPENROWSET`, `OPENDATASOURCE`, `EXEC XP_`, `EXECUTE XP_`
 
 ---
 
 ### 5. Capa de Presentacion — `main.py`
 
 Responsabilidades:
-- Renderizar la pantalla de login (correo + contrasena) y la pantalla de chat con Tkinter.
-- Orquestar el flujo completo: login → generacion SQL → normalizacion → validacion → ejecucion → formateo → display.
+- Renderizar pantallas de login, registro y chat con Tkinter (tema oscuro, teal accent).
+- Orquestar el flujo completo: login → NL → validacion prefijo IA → normalizacion SQL →
+  RBAC → ejecucion → formateo → display.
+- Mantener el historial conversacional (`self.historial_conversacion`, max 10 entradas) y
+  pasarlo a `interpretar_pregunta` en cada consulta.
+- Interceptar respuestas especiales de la IA antes de normalizar el SQL:
+  - `PEDIR:` → muestra pregunta en el chat, actualiza historial, espera siguiente turno.
+  - `INSTRUCCION:` → muestra mensaje en el chat, actualiza historial.
+  - `PENDING_HASH:` → extrae la contrasena en texto plano del EXEC, genera hash bcrypt y
+    sustituye en el SQL antes de enviarlo a la base de datos.
 - Ejecutar el flujo NL->SQL->DB en un hilo secundario (`threading.Thread`) para evitar el bloqueo de la UI.
 - Normalizar el SQL generado por la IA (eliminar markdown, backticks, prefijos textuales).
 - Gestionar el estado de la UI durante el procesamiento (bloqueo de inputs, indicador de estado).
-- Mostrar mensajes de error o advertencia en el chat sin romper el flujo.
+- Mostrar mensajes en el chat con estilo de burbuja segun el autor (usuario, asistente, sistema).
 
 ---
 
@@ -121,39 +142,81 @@ Responsabilidades:
         ▼
 BibliotecaApp.procesar_consulta()
         │
-        ├─ Verificar cuota de IA (ai_blocked_until)
+        ├─ Verificar cuota de IA (ai_blocked_until + threading.Lock)
         │
-        ├─ AIAssistant.interpretar_pregunta(pregunta)
-        │       └─ Gemini API → T-SQL en texto plano
+        ├─ AIAssistant.interpretar_pregunta(pregunta, historial)
+        │       └─ Gemini API — con contexto de dominio + historial
+        │           retorna: SQL | PEDIR:... | INSTRUCCION:... | PENDING_HASH:...
+        │
+        ├─ ¿Respuesta es PEDIR:?
+        │       └─ Mostrar pregunta en chat, actualizar historial → FIN del turno
+        │
+        ├─ ¿Respuesta es INSTRUCCION:?
+        │       └─ Mostrar mensaje en chat, actualizar historial → FIN del turno
+        │
+        ├─ ¿Respuesta es PENDING_HASH:?
+        │       └─ Extraer contrasena en texto plano del EXEC
+        │          Generar hash bcrypt (rounds=12) en Python
+        │          Sustituir en SQL antes de continuar
         │
         ├─ BibliotecaApp._normalizar_sql(sql)
         │       └─ Limpia markdown, backticks, prefijo "SQL:"
         │
         ├─ SecurityManager.validar_accion(sql)
-        │       └─ Bloquea si el rol no tiene permiso
+        │       └─ Bloquea si el rol no tiene permiso → FIN del turno
+        │
+        ├─ Inyectar TOP 100 en SELECT sin TOP (evita full table scan en respuesta)
         │
         ├─ DatabaseManager.ejecutar_consulta(sql)
-        │       └─ PyODBC → SQL Server → filas o confirmacion
+        │       └─ PyODBC → SQL Server (bajo login del rol) → filas o confirmacion
         │
-        └─ AIAssistant.formatear_respuesta_humana(pregunta, datos)
-                └─ Convierte filas a texto legible → muestra en chat
+        ├─ AIAssistant.formatear_respuesta_humana(pregunta, datos)
+        │       └─ Convierte filas a texto legible
+        │
+        └─ Actualizar historial (pregunta + SQL), recortar a 10 entradas
+                └─ Mostrar respuesta en chat
 ```
 
 ---
 
 ## Decisiones de diseno
 
-**Autenticacion con correo y SHA-256 via procedimiento almacenado**
-La aplicacion calcula SHA-256 de la contrasena en Python y lo verifica contra `personas.usuarios` usando un login auxiliar de solo lectura (`SQL_LOGIN_APP`). El rol queda registrado en la tabla, no derivado del nombre del login. Los logins de SQL Server son internos a la aplicacion; el usuario final solo ve un campo de correo y contrasena.
+**Autenticacion con bcrypt via procedimiento almacenado**
+La aplicacion obtiene el hash bcrypt del usuario desde `personas.usuarios` (via `personas.autenticar_usuario`
+usando el login auxiliar de solo lectura `SQL_LOGIN_APP`) y verifica la contrasena con `bcrypt.checkpw()`
+en Python. El hash nunca se recalcula en SQL Server. El rol queda registrado en la tabla, no derivado del
+nombre del login. Los logins de SQL Server son internos a la aplicacion; el usuario final solo ingresa correo y contrasena.
+
+**Proteccion contra fuerza bruta**
+`SecurityManager` mantiene un diccionario de clase `_failed_attempts` protegido con `threading.Lock`.
+Tras 5 intentos fallidos por correo, el acceso se bloquea 30 segundos. El correo no se registra en logs
+de bloqueo para proteger la privacidad del usuario.
 
 **Reconexion por rol tras el login**
-Una vez autenticado, la aplicacion selecciona el login de SQL Server correspondiente al rol del usuario y reconstruye `DatabaseManager` con esas credenciales. Todas las consultas posteriores se ejecutan bajo esa identidad, activando los permisos del motor de forma transparente.
+Una vez autenticado, la aplicacion selecciona el login de SQL Server correspondiente al rol del usuario y
+reconstruye `DatabaseManager` con esas credenciales. Todas las consultas posteriores se ejecutan bajo esa
+identidad, activando los permisos del motor de forma transparente.
+
+**Memoria conversacional**
+`main.py` mantiene `historial_conversacion` (lista de dicts `{rol, texto}`). Se pasa a
+`interpretar_pregunta()` en cada turno. El historial se recorta a los ultimos 10 intercambios y se
+reinicia al cambiar de pantalla. Esto permite al asistente recolectar datos en varios pasos antes de
+ejecutar una operacion.
 
 **Procesamiento asincronico en la GUI**
-El flujo NL->SQL->DB se ejecuta en un hilo secundario (`threading.Thread`) para no bloquear la UI de Tkinter. Todas las actualizaciones visuales se despachan al hilo principal mediante `root.after(0, callback)`.
+El flujo NL->SQL->DB se ejecuta en un hilo secundario (`threading.Thread`, daemon=True) para no bloquear
+la UI de Tkinter. Todas las actualizaciones visuales se despachan al hilo principal mediante
+`root.after(0, callback)`.
 
 **Fallback de modelos Gemini**
-La lista de candidatos permite que la aplicacion funcione aunque un modelo especifico no este disponible para la API key usada, sin requerir intervencion del usuario.
+La lista de candidatos permite que la aplicacion funcione aunque un modelo especifico no este disponible
+para la API key usada, sin requerir intervencion del usuario.
 
 **Normalizacion de SQL en la GUI**
-La limpieza del SQL generado por la IA se centraliza en `_normalizar_sql()` dentro de `BibliotecaApp`. Esto mantiene `AIAssistant` desacoplado del formato de respuesta del modelo.
+La limpieza del SQL generado por la IA se centraliza en `_normalizar_sql()` dentro de `BibliotecaApp`.
+Esto mantiene `AIAssistant` desacoplado del formato de respuesta del modelo.
+
+**Doble SDK de Google Gemini**
+Se mantiene soporte para `google-genai` (SDK nuevo, preferido) y `google-generativeai` (SDK legado,
+fallback). Esto garantiza compatibilidad con entornos donde solo uno de los dos esta disponible. La
+deteccion es automatica en tiempo de importacion.

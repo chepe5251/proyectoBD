@@ -94,12 +94,13 @@ class AIAssistant:
 
         Vistas disponibles (preferirlas para consultas de detalle):
         - catalogo.vista_libros_completa (id_libro, titulo, ano_publicacion, nombre_autor, apellido_autor, nombre_categoria)
-        - operaciones.vista_prestamos_activos (id_prestamo, nombre_usuario, apellido_usuario, titulo, fecha_prestamo)
+        - operaciones.vista_prestamos_activos (id_prestamo, nombre_usuario, apellido_usuario, titulo, fecha_prestamo, fecha_limite)
         - operaciones.vista_prestamos_vencidos (id_prestamo, nombre_usuario, apellido_usuario, correo, titulo, fecha_prestamo, fecha_limite, dias_vencido) — usar para preguntas sobre prestamos vencidos o atrasados.
 
         Procedimientos almacenados disponibles:
-        - EXEC personas.registrar_usuario @nombre, @apellido, @correo, @telefono
-        - EXEC operaciones.registrar_prestamo @id_usuario, @id_libro
+        - EXEC personas.registrar_usuario @nombre, @apellido, @correo, @telefono, @password_hash, @rol
+          (para registrar usuario usa el prefijo PENDING_HASH: con clave en texto plano; ver instrucciones de flujo)
+        - EXEC operaciones.registrar_prestamo @id_usuario, @id_libro [, @dias_prestamo=15]
         - EXEC operaciones.devolver_libro @id_prestamo
         - EXEC catalogo.buscar_libro @palabra
 

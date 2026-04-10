@@ -19,7 +19,8 @@ GO
 -- =============================================
 
 -- Usuarios registrados en el sistema de biblioteca
--- password_hash: SHA-256 de la contraseña del usuario (64 caracteres hex)
+-- password_hash: hash bcrypt (rounds=12) generado en Python; longitud tipica 60 chars.
+--               VARCHAR(72) con margen. NUNCA almacenar contrasenas en texto plano.
 -- rol: determina qué login de SQL Server usará la sesión ('admin', 'operativo', 'usuario')
 CREATE TABLE personas.usuarios (
     id_usuario       INT IDENTITY(1,1) PRIMARY KEY,

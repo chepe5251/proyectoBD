@@ -19,10 +19,13 @@ Roles soportados:
     - usuario:    solo SELECT/WITH; bloquea todo DML de escritura y DDL.
 """
 
+import logging
 import threading
 import time
 
 import bcrypt
+
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +125,7 @@ class SecurityManager:
         # --- Proteccion fuerza bruta ---
         bloqueado, segundos = self._esta_bloqueado(correo)
         if bloqueado:
-            print(f"Login bloqueado por {segundos}s para: {correo}")
+            _log.warning("Login bloqueado por fuerza bruta: %ds restantes para correo [omitido].", segundos)
             return False
 
         # --- Conexion auxiliar: solo puede ejecutar personas.autenticar_usuario ---
@@ -134,13 +137,13 @@ class SecurityManager:
                 max_rows=1,
             )
         except Exception as exc:
-            print(f"Error inesperado en la conexion auxiliar de autenticacion: {exc}")
+            _log.error("Error inesperado en la conexion auxiliar de autenticacion: %s", type(exc).__name__)
             return False
 
         if filas is None:
-            print(
-                "Error de autenticacion: fallo la conexion auxiliar o el procedimiento. "
-                "Verificar SQL_LOGIN_APP y permisos en SQL Server."
+            _log.error(
+                "autenticar_usuario devolvio None. "
+                "Verificar SQL_LOGIN_APP y permisos EXECUTE en SQL Server."
             )
             return False
 
