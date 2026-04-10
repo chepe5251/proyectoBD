@@ -12,7 +12,6 @@ Seguridad:
 """
 
 import os
-import sys
 from dotenv import load_dotenv
 
 # Inicialización: Carga de variables de entorno desde el archivo físico .env en la raíz.
@@ -41,9 +40,3 @@ SQL_PASS_OPERATIVO:   str = os.getenv("SQL_PASS_OPERATIVO",   "")
 SQL_LOGIN_USUARIO:    str = os.getenv("SQL_LOGIN_USUARIO",    "")
 SQL_PASS_USUARIO:     str = os.getenv("SQL_PASS_USUARIO",     "")
 
-# --- Validación de Integridad de Runtime ---
-# Protocolo de verificación de arranque para asegurar que las dependencias críticas 
-# estén presentes antes de la ejecución del sistema[cite: 102].
-if not GEMINI_KEY:
-    print("CRITICAL_ERROR: Fallo en la inicialización. GEMINI_API_KEY no detectada en el entorno.")
-    sys.exit(1)

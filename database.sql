@@ -65,17 +65,21 @@ GO
 
 -- Registro de prestamos y devoluciones
 -- estado: 1 = libro prestado, 0 = devuelto
+-- fecha_limite: fecha maxima de devolucion (calculada al momento del prestamo)
 CREATE TABLE operaciones.prestamos (
     id_prestamo      INT IDENTITY(1,1) PRIMARY KEY,
     id_usuario       INT  NOT NULL,
     id_libro         INT  NOT NULL,
     fecha_prestamo   DATE NOT NULL,
+    fecha_limite     DATE NOT NULL,
     fecha_devolucion DATE,
     estado           BIT  NOT NULL,
     CONSTRAINT fk_prestamo_usuario
         FOREIGN KEY (id_usuario) REFERENCES personas.usuarios(id_usuario),
     CONSTRAINT fk_prestamo_libro
-        FOREIGN KEY (id_libro) REFERENCES catalogo.libros(id_libro)
+        FOREIGN KEY (id_libro) REFERENCES catalogo.libros(id_libro),
+    CONSTRAINT chk_fecha_limite
+        CHECK (fecha_limite > fecha_prestamo)
 );
 GO
 
@@ -154,17 +158,62 @@ GO
 -- Indices
 -- =============================================
 
+-- IX_BusquedaTitulo: acelera WHERE titulo LIKE '%palabra%' en catalogo.buscar_libro
+-- y consultas de busqueda por titulo desde el asistente IA.
+-- Sin indice: Table Scan sobre toda la tabla libros.
+-- Con indice: Index Seek parcial sobre el B-Tree de titulo.
 CREATE INDEX IX_BusquedaTitulo
 ON catalogo.libros(titulo);
 GO
 
+-- IX_BuscarPrestamoUsuario: acelera JOIN y WHERE id_usuario en operaciones.prestamos.
+-- Consultas frecuentes: prestamos activos por usuario, historial personal.
+-- Sin indice: Clustered Index Scan sobre prestamos (crece con cada prestamo).
+-- Con indice: Index Seek directo por id_usuario.
 CREATE INDEX IX_BuscarPrestamoUsuario
 ON operaciones.prestamos(id_usuario);
 GO
 
--- Indice para acelerar el login por correo
+-- IX_LoginCorreo: acelera WHERE correo = @correo en personas.autenticar_usuario.
+-- Ejecutado en cada login; debe ser un Index Seek, nunca un Scan.
 CREATE INDEX IX_LoginCorreo
 ON personas.usuarios(correo);
+GO
+
+-- =============================================
+-- Demostracion de rendimiento de indices
+-- =============================================
+
+-- DEMOSTRACION DE RENDIMIENTO: IX_BusquedaTitulo
+-- Sin indice (simulado con IGNORE INDEX no disponible en T-SQL, se documenta el plan)
+-- Con indice activo:
+SET STATISTICS TIME ON
+SELECT id_libro, titulo FROM catalogo.libros WHERE titulo LIKE '%redes%'
+SET STATISTICS TIME OFF
+-- Justificacion: La IA ejecuta busquedas por titulo frecuentemente mediante
+-- catalogo.buscar_libro. Sin este indice cada busqueda hace full table scan.
+-- Con el indice el motor usa index seek reduciendo el costo de I/O.
+GO
+
+-- DEMOSTRACION DE RENDIMIENTO: IX_BuscarPrestamoUsuario
+-- Sin indice (simulado con IGNORE INDEX no disponible en T-SQL, se documenta el plan)
+-- Con indice activo:
+SET STATISTICS TIME ON
+SELECT id_prestamo, estado FROM operaciones.prestamos WHERE id_usuario = 1
+SET STATISTICS TIME OFF
+-- Justificacion: Las consultas de historial y prestamos activos filtran por
+-- id_usuario. Sin indice se hace Clustered Index Scan sobre toda la tabla.
+-- Con el indice el motor hace Index Seek directo al id_usuario buscado.
+GO
+
+-- DEMOSTRACION DE RENDIMIENTO: IX_LoginCorreo
+-- Sin indice (simulado con IGNORE INDEX no disponible en T-SQL, se documenta el plan)
+-- Con indice activo:
+SET STATISTICS TIME ON
+SELECT id_usuario, rol, password_hash FROM personas.usuarios WHERE correo = 'ana.rodriguez@gmail.com'
+SET STATISTICS TIME OFF
+-- Justificacion: personas.autenticar_usuario filtra por correo en cada login.
+-- Sin indice: Table Scan sobre usuarios. Con indice: Index Seek O(log n).
 GO
 
 -- =============================================
@@ -224,7 +273,7 @@ CREATE PROCEDURE personas.registrar_usuario
     @apellido      VARCHAR(100),
     @correo        VARCHAR(150),
     @telefono      VARCHAR(20),
-    @password_hash CHAR(64),
+    @password_hash VARCHAR(72),  -- bcrypt hash, consistente con personas.usuarios
     @rol           VARCHAR(20) = 'usuario'
 AS
 BEGIN
@@ -237,15 +286,16 @@ END;
 GO
 
 CREATE PROCEDURE operaciones.registrar_prestamo
-    @id_usuario INT,
-    @id_libro   INT
+    @id_usuario    INT,
+    @id_libro      INT,
+    @dias_prestamo INT = 15
 AS
 BEGIN
     SET NOCOUNT ON;
     INSERT INTO operaciones.prestamos
-        (id_usuario, id_libro, fecha_prestamo, estado)
+        (id_usuario, id_libro, fecha_prestamo, fecha_limite, estado)
     VALUES
-        (@id_usuario, @id_libro, GETDATE(), 1);
+        (@id_usuario, @id_libro, GETDATE(), DATEADD(DAY, @dias_prestamo, GETDATE()), 1);
 END;
 GO
 
@@ -329,11 +379,33 @@ SELECT
     u.nombre_usuario,
     u.apellido_usuario,
     l.titulo,
-    p.fecha_prestamo
+    p.fecha_prestamo,
+    p.fecha_limite
 FROM operaciones.prestamos p
 JOIN personas.usuarios u ON p.id_usuario = u.id_usuario
 JOIN catalogo.libros   l ON p.id_libro   = l.id_libro
 WHERE p.estado = 1;
+GO
+
+CREATE VIEW operaciones.vista_prestamos_vencidos AS
+SELECT
+    p.id_prestamo,
+    u.nombre_usuario,
+    u.apellido_usuario,
+    u.correo,
+    l.titulo,
+    p.fecha_prestamo,
+    p.fecha_limite,
+    DATEDIFF(DAY, p.fecha_limite, GETDATE()) AS dias_vencido
+FROM operaciones.prestamos p
+JOIN personas.usuarios u ON p.id_usuario = u.id_usuario
+JOIN catalogo.libros   l ON p.id_libro   = l.id_libro
+WHERE p.estado = 1 AND p.fecha_limite < GETDATE();
+GO
+
+GRANT SELECT ON operaciones.vista_prestamos_vencidos TO rol_admin;
+GRANT SELECT ON operaciones.vista_prestamos_vencidos TO rol_operativo;
+GRANT SELECT ON operaciones.vista_prestamos_vencidos TO rol_usuario;
 GO
 
 -- =============================================
@@ -418,11 +490,11 @@ VALUES
     ('Structured Computer Organization',1976, 6, 4);
 GO
 
-INSERT INTO operaciones.prestamos (id_usuario, id_libro, fecha_prestamo, fecha_devolucion, estado)
+INSERT INTO operaciones.prestamos (id_usuario, id_libro, fecha_prestamo, fecha_limite, fecha_devolucion, estado)
 VALUES
-    (1, 1,  '2026-02-01', '2026-02-10', 0),
-    (3, 4,  '2026-02-05', NULL,         1),
-    (5, 13, '2026-02-07', NULL,         1),
-    (2, 16, '2026-01-20', '2026-02-01', 0),
-    (8, 7,  '2026-02-15', NULL,         1);
+    (1, 1,  '2026-02-01', '2026-02-16', '2026-02-10', 0),  -- devuelto antes del limite
+    (3, 4,  '2026-02-05', '2026-04-20', NULL,          1),  -- activo, vigente
+    (5, 13, '2026-02-07', '2026-04-15', NULL,          1),  -- activo, vigente
+    (2, 16, '2026-01-20', '2026-02-04', '2026-02-01', 0),  -- devuelto antes del limite
+    (8, 7,  '2026-02-15', '2026-02-20', NULL,          1);  -- activo, ya vencido (datos de prueba)
 GO

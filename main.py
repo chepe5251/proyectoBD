@@ -76,9 +76,23 @@ class BibliotecaApp:
         self.ent_pregunta = None
         self.txt_chat = None
         self.lbl_estado = None
+        self.txt_sql = None
+        self.lbl_modelo = None
+        self.lbl_sql_estado = None
         self.botones_rapidos = []
 
-        self.pantalla_login()
+        self.ent_reg_nombre = None
+        self.ent_reg_apellido = None
+        self.ent_reg_correo = None
+        self.ent_reg_telefono = None
+        self.ent_reg_password = None
+        self.ent_reg_confirmar = None
+
+        from config import GEMINI_KEY
+        if not GEMINI_KEY:
+            self.pantalla_error_config()
+        else:
+            self.pantalla_login()
 
     def pantalla_login(self):
         """Construye pantalla de autenticacion."""
@@ -206,8 +220,126 @@ class BibliotecaApp:
         )
         btn_login.pack(anchor="w")
 
+        btn_registro = tk.Button(
+            form_panel,
+            text="Registrar usuario",
+            command=self.pantalla_registro,
+            bg=self.theme["panel_soft"],
+            fg=self.theme["muted"],
+            activebackground=self.theme["border"],
+            activeforeground=self.theme["text"],
+            relief=tk.FLAT,
+            padx=14,
+            pady=6,
+            font=(self.fonts["body"], 9),
+            cursor="hand2",
+        )
+        btn_registro.pack(anchor="w", pady=(8, 0))
+
         self.ent_pass.bind("<Return>", lambda _e: self.ejecutar_login())
         self.ent_correo.focus_set()
+
+    def pantalla_error_config(self):
+        """Pantalla que se muestra cuando falta GEMINI_API_KEY en el entorno."""
+        self.limpiar_pantalla()
+
+        container = tk.Frame(self.root, bg=self.theme["bg"])
+        container.pack(fill=tk.BOTH, expand=True, padx=40, pady=40)
+
+        card = tk.Frame(
+            container,
+            bg=self.theme["panel"],
+            highlightthickness=2,
+            highlightbackground=self.theme["error"],
+            padx=36,
+            pady=36,
+        )
+        card.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            card,
+            text="Error de configuracion",
+            bg=self.theme["panel"],
+            fg=self.theme["error"],
+            font=(self.fonts["title"], 18, "bold"),
+        ).pack(anchor="w")
+
+        tk.Label(
+            card,
+            text="Falta el archivo .env o la variable GEMINI_API_KEY no esta definida.",
+            bg=self.theme["panel"],
+            fg=self.theme["text"],
+            font=(self.fonts["body"], 11),
+            wraplength=700,
+            justify="left",
+        ).pack(anchor="w", pady=(10, 20))
+
+        tk.Label(
+            card,
+            text="Crea un archivo .env en la raiz del proyecto con el siguiente contenido:",
+            bg=self.theme["panel"],
+            fg=self.theme["muted"],
+            font=(self.fonts["body"], 10),
+        ).pack(anchor="w", pady=(0, 8))
+
+        variables = (
+            "GEMINI_API_KEY=tu_clave_de_google_gemini\n"
+            "DB_SERVER=nombre_de_tu_servidor\n"
+            "DB_NAME=biblioteca\n"
+            "SQL_LOGIN_APP=login_app\n"
+            "SQL_PASS_APP=App#2026!\n"
+            "SQL_LOGIN_ADMIN=login_admin\n"
+            "SQL_PASS_ADMIN=Admin#2026!\n"
+            "SQL_LOGIN_OPERATIVO=login_operativo\n"
+            "SQL_PASS_OPERATIVO=Operativo#2026!\n"
+            "SQL_LOGIN_USUARIO=login_usuario\n"
+            "SQL_PASS_USUARIO=Usuario#2026!"
+        )
+        txt = tk.Text(
+            card,
+            bg=self.theme["input_bg"],
+            fg="#a3e635",
+            font=(self.fonts["mono"], 10),
+            relief=tk.FLAT,
+            bd=0,
+            padx=12,
+            pady=10,
+            height=12,
+            state="normal",
+        )
+        txt.insert(tk.END, variables)
+        txt.config(state="disabled")
+        txt.pack(fill=tk.X, pady=(0, 20))
+
+        tk.Button(
+            card,
+            text="Reintentar",
+            command=self.reintentar_config,
+            bg=self.theme["accent"],
+            fg="#042f2e",
+            activebackground="#2dd4bf",
+            activeforeground="#022c22",
+            relief=tk.FLAT,
+            padx=16,
+            pady=9,
+            font=(self.fonts["body"], 10, "bold"),
+            cursor="hand2",
+        ).pack(anchor="w")
+
+    def reintentar_config(self):
+        """Recarga variables de entorno y reintenta arrancar la app."""
+        from dotenv import load_dotenv
+        load_dotenv(override=True)
+        import config
+        import os
+        config.GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+        if config.GEMINI_KEY:
+            self.pantalla_login()
+        else:
+            messagebox.showerror(
+                "Clave no encontrada",
+                "GEMINI_API_KEY sigue sin detectarse. Verifica el archivo .env y vuelve a intentarlo.",
+            )
 
     def ejecutar_login(self):
         """Valida credenciales y abre el chat principal."""
@@ -233,10 +365,181 @@ class BibliotecaApp:
 
         messagebox.showerror("Acceso denegado", "Credenciales incorrectas.")
 
-    def pantalla_asistente(self):
-        """Ventana principal del chat."""
+    def pantalla_registro(self):
+        """Pantalla completa para registrar un nuevo usuario."""
         self.limpiar_pantalla()
-        usuario = self.seguridad.usuario_actual or {}
+
+        container = tk.Frame(self.root, bg=self.theme["bg"])
+        container.pack(fill=tk.BOTH, expand=True, padx=30, pady=30)
+
+        card = tk.Frame(
+            container,
+            bg=self.theme["panel"],
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+        )
+        card.pack(fill=tk.BOTH, expand=True)
+
+        info_panel = tk.Frame(card, bg=self.theme["accent_soft"], padx=28, pady=32)
+        info_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            info_panel,
+            text="Nuevo Usuario",
+            bg=self.theme["accent_soft"],
+            fg="#e6fffb",
+            font=(self.fonts["title"], 22, "bold"),
+        ).pack(anchor="w")
+
+        tk.Label(
+            info_panel,
+            text="Completa el formulario para registrarte en el sistema de biblioteca.",
+            bg=self.theme["accent_soft"],
+            fg="#ccfbf1",
+            font=(self.fonts["body"], 11),
+            justify="left",
+            wraplength=340,
+        ).pack(anchor="w", pady=(10, 20))
+
+        for item in ["Rol asignado: usuario", "Acceso de solo lectura al catalogo", "Gestionado por el administrador"]:
+            tk.Label(
+                info_panel,
+                text=f"- {item}",
+                bg=self.theme["accent_soft"],
+                fg="#ecfeff",
+                font=(self.fonts["body"], 10),
+                anchor="w",
+            ).pack(anchor="w", pady=2)
+
+        form_panel = tk.Frame(card, bg=self.theme["panel"], padx=34, pady=34)
+        form_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            form_panel,
+            text="Crear cuenta",
+            bg=self.theme["panel"],
+            fg=self.theme["text"],
+            font=(self.fonts["title"], 20, "bold"),
+        ).pack(anchor="w")
+
+        tk.Label(
+            form_panel,
+            text="Ingresa tus datos para registrarte.",
+            bg=self.theme["panel"],
+            fg=self.theme["muted"],
+            font=(self.fonts["body"], 10),
+        ).pack(anchor="w", pady=(6, 14))
+
+        campos_def = [
+            ("ent_reg_nombre",    "Nombre",              False),
+            ("ent_reg_apellido",  "Apellido",            False),
+            ("ent_reg_correo",    "Correo electronico",  False),
+            ("ent_reg_telefono",  "Telefono",            False),
+            ("ent_reg_password",  "Contrasena",          True),
+            ("ent_reg_confirmar", "Confirmar contrasena",True),
+        ]
+        for attr, label, oculto in campos_def:
+            tk.Label(
+                form_panel,
+                text=label,
+                bg=self.theme["panel"],
+                fg=self.theme["text"],
+                font=(self.fonts["body"], 10, "bold"),
+            ).pack(anchor="w")
+            ent = tk.Entry(
+                form_panel,
+                width=38,
+                show="*" if oculto else "",
+                bg=self.theme["input_bg"],
+                fg=self.theme["text"],
+                insertbackground=self.theme["text"],
+                relief=tk.FLAT,
+                font=(self.fonts["body"], 11),
+            )
+            ent.pack(anchor="w", ipady=6, pady=(4, 10))
+            setattr(self, attr, ent)
+
+        self.ent_reg_confirmar.bind("<Return>", lambda _e: self.ejecutar_registro())
+
+        tk.Button(
+            form_panel,
+            text="Crear cuenta",
+            command=self.ejecutar_registro,
+            bg=self.theme["accent"],
+            fg="#042f2e",
+            activebackground="#2dd4bf",
+            activeforeground="#022c22",
+            relief=tk.FLAT,
+            padx=14,
+            pady=9,
+            font=(self.fonts["body"], 10, "bold"),
+            cursor="hand2",
+        ).pack(anchor="w")
+
+        tk.Button(
+            form_panel,
+            text="Volver al login",
+            command=self.pantalla_login,
+            bg=self.theme["panel_soft"],
+            fg=self.theme["muted"],
+            activebackground=self.theme["border"],
+            activeforeground=self.theme["text"],
+            relief=tk.FLAT,
+            padx=14,
+            pady=6,
+            font=(self.fonts["body"], 9),
+            cursor="hand2",
+        ).pack(anchor="w", pady=(8, 0))
+
+        self.ent_reg_nombre.focus_set()
+
+    def ejecutar_registro(self):
+        """Valida campos y registra un nuevo usuario en la BD."""
+        nombre    = self.ent_reg_nombre.get().strip()
+        apellido  = self.ent_reg_apellido.get().strip()
+        correo    = self.ent_reg_correo.get().strip()
+        telefono  = self.ent_reg_telefono.get().strip()
+        password  = self.ent_reg_password.get()
+        confirmar = self.ent_reg_confirmar.get()
+
+        if not all([nombre, apellido, correo, telefono, password, confirmar]):
+            messagebox.showwarning("Datos incompletos", "Todos los campos son obligatorios.")
+            return
+        if "@" not in correo or "." not in correo.split("@")[-1]:
+            messagebox.showwarning("Correo invalido", "El correo ingresado no es valido.")
+            return
+        if len(telefono) < 8:
+            messagebox.showwarning("Telefono invalido", "El telefono debe tener al menos 8 caracteres.")
+            return
+        if len(password) < 6:
+            messagebox.showwarning("Contrasena corta", "La contrasena debe tener al menos 6 caracteres.")
+            return
+        if password != confirmar:
+            messagebox.showwarning("Contrasenas distintas", "Las contrasenas no coinciden.")
+            return
+
+        try:
+            import bcrypt
+            from config import SQL_LOGIN_OPERATIVO, SQL_PASS_OPERATIVO
+
+            pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
+            db_reg = DatabaseManager(uid=SQL_LOGIN_OPERATIVO, pwd=SQL_PASS_OPERATIVO)
+            resultado = db_reg.ejecutar_consulta(
+                "EXEC personas.registrar_usuario @nombre=?, @apellido=?, @correo=?, @telefono=?, @password_hash=?, @rol=?",
+                (nombre, apellido, correo, telefono, pw_hash, "usuario"),
+            )
+            if resultado is None:
+                messagebox.showerror("Error", "No se pudo registrar el usuario. Es posible que el correo ya este en uso.")
+            else:
+                messagebox.showinfo("Registro exitoso", f"Usuario {nombre} registrado correctamente. Ya puedes iniciar sesion.")
+                self.pantalla_login()
+        except Exception as e:
+            messagebox.showerror("Error inesperado", str(e))
+
+    def pantalla_asistente(self):
+        """Ventana principal del chat con panel SQL lateral."""
+        self.limpiar_pantalla()
+        usuario = self.seguridad.usuario_actual or {}  # type: ignore[union-attr]
         rol = str(usuario.get("rol") or "sin rol").upper()
 
         top = tk.Frame(self.root, bg=self.theme["panel"], padx=20, pady=14)
@@ -270,11 +573,21 @@ class BibliotecaApp:
         )
         self.lbl_estado.pack(side=tk.RIGHT)
 
-        body = tk.Frame(self.root, bg=self.theme["bg"], padx=20, pady=16)
-        body.pack(fill=tk.BOTH, expand=True)
+        paned = tk.PanedWindow(
+            self.root,
+            orient=tk.HORIZONTAL,
+            bg=self.theme["bg"],
+            sashwidth=5,
+            sashrelief=tk.FLAT,
+        )
+        paned.pack(fill=tk.BOTH, expand=True, padx=20, pady=16)
+
+        # ── Panel izquierdo: chat (≈65%) ──────────────────────────────
+        left = tk.Frame(paned, bg=self.theme["bg"])
+        paned.add(left, minsize=400)
 
         self.txt_chat = scrolledtext.ScrolledText(
-            body,
+            left,
             wrap=tk.WORD,
             bg=self.theme["panel_soft"],
             fg=self.theme["text"],
@@ -289,7 +602,7 @@ class BibliotecaApp:
         self.txt_chat.config(state="disabled")
         self._configurar_tags_chat()
 
-        tools = tk.Frame(body, bg=self.theme["bg"], pady=10)
+        tools = tk.Frame(left, bg=self.theme["bg"], pady=10)
         tools.pack(fill=tk.X)
 
         consulta_rapida = [
@@ -316,7 +629,7 @@ class BibliotecaApp:
             boton.pack(side=tk.LEFT, padx=(0, 8))
             self.botones_rapidos.append(boton)
 
-        composer = tk.Frame(body, bg=self.theme["bg"])
+        composer = tk.Frame(left, bg=self.theme["bg"])
         composer.pack(fill=tk.X, pady=(2, 0))
 
         input_box = tk.Frame(
@@ -355,8 +668,74 @@ class BibliotecaApp:
         )
         self.btn_enviar.pack(side=tk.LEFT, padx=(8, 0))
 
+        # ── Panel derecho: SQL en tiempo real (≈35%) ──────────────────
+        right = tk.Frame(paned, bg=self.theme["panel"], padx=12, pady=12)
+        paned.add(right, minsize=200)
+
+        tk.Label(
+            right,
+            text="SQL generado",
+            bg=self.theme["panel"],
+            fg=self.theme["accent"],
+            font=(self.fonts["body"], 10, "bold"),
+            anchor="w",
+        ).pack(fill=tk.X)
+
+        self.txt_sql = scrolledtext.ScrolledText(
+            right,
+            wrap=tk.WORD,
+            bg=self.theme["input_bg"],
+            fg="#a3e635",
+            font=(self.fonts["mono"], 10),
+            relief=tk.FLAT,
+            bd=0,
+            state="disabled",
+        )
+        self.txt_sql.pack(fill=tk.BOTH, expand=True, pady=(6, 8))
+
+        tk.Frame(right, bg=self.theme["border"], height=1).pack(fill=tk.X, pady=(0, 6))
+
+        self.lbl_modelo = tk.Label(
+            right,
+            text="Modelo: —",
+            bg=self.theme["panel"],
+            fg=self.theme["muted"],
+            font=(self.fonts["body"], 9),
+            anchor="w",
+        )
+        self.lbl_modelo.pack(fill=tk.X)
+
+        self.lbl_sql_estado = tk.Label(
+            right,
+            text="",
+            bg=self.theme["panel"],
+            fg=self.theme["muted"],
+            font=(self.fonts["body"], 9),
+            anchor="w",
+        )
+        self.lbl_sql_estado.pack(fill=tk.X)
+
+        # Ajustar proporción 65/35 tras renderizar
+        self.root.update_idletasks()
+        total = paned.winfo_width()
+        if total > 10:
+            paned.sash_place(0, int(total * 0.65), 0)
+
         self._mostrar_bienvenida()
         self.ent_pregunta.focus_set()
+
+    def mostrar_sql(self, sql: str, modelo: str, estado: str = ""):
+        """Actualiza el panel lateral con el SQL generado y el estado de la ejecucion."""
+        if self.txt_sql is None:
+            return
+        self.txt_sql.config(state="normal")
+        self.txt_sql.delete("1.0", tk.END)
+        self.txt_sql.insert(tk.END, sql)
+        self.txt_sql.config(state="disabled")
+        if self.lbl_modelo:
+            self.lbl_modelo.config(text=f"Modelo: {modelo}")
+        if self.lbl_sql_estado:
+            self.lbl_sql_estado.config(text=estado)
 
     def _configurar_tags_chat(self):
         self.txt_chat.tag_configure(
@@ -541,19 +920,25 @@ class BibliotecaApp:
                 return
 
             sql = self._normalizar_sql(sql)
+            modelo = self.asistente.model_name
             if not sql:
+                ui(self.mostrar_sql, "(no se genero SQL valido)", modelo, "")
                 ui(self.mostrar_en_chat, "No se pudo generar una consulta valida.", "Sistema")
                 return
 
             if "?" in sql:
+                ui(self.mostrar_sql, sql, modelo, "Pendiente de validacion")
                 ui(self.mostrar_en_chat,
                    "La consulta generada quedo incompleta (placeholder '?'). Intenta reformular.",
                    "Sistema")
                 return
 
-            if not self.seguridad.validar_accion(sql):
+            ui(self.mostrar_sql, sql, modelo, "Pendiente de validacion")
+
+            if not self.seguridad.validar_accion(sql):  # type: ignore[union-attr]
+                ui(self.mostrar_sql, sql, modelo, "⚠ Bloqueado por permisos de rol")
                 ui(self.mostrar_en_chat,
-                   f"No puedo ejecutar esa accion con tu rol actual. {self.seguridad.describir_permisos()}",
+                   f"No puedo ejecutar esa accion con tu rol actual. {self.seguridad.describir_permisos()}",  # type: ignore[union-attr]
                    "Sistema")
                 return
 
@@ -563,9 +948,11 @@ class BibliotecaApp:
 
             datos_crudos = self.db.ejecutar_consulta(sql)
             if datos_crudos is None:
+                ui(self.mostrar_sql, sql, modelo, "✗ Error en base de datos")
                 ui(self.mostrar_en_chat, "Ocurrio un error al consultar la base de datos.", "Sistema")
                 return
 
+            ui(self.mostrar_sql, sql, modelo, "✓ Ejecutado correctamente")
             respuesta_final = self.asistente.formatear_respuesta_humana(pregunta, datos_crudos)
             ui(self.mostrar_en_chat, respuesta_final, "Asistente")
         finally:

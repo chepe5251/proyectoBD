@@ -235,6 +235,12 @@ class SecurityManager:
         if self._tiene_multiples_sentencias(sql_upper):
             return False
 
+        # Rechazar patrones clasicos de SQL injection en texto del SQL generado.
+        _PATRONES_SQLI = ("OR '1'='1", "OR 1=1", "' OR '", "--", "/*", "*/", "WAITFOR DELAY", "XP_CMDSHELL")
+        for patron in _PATRONES_SQLI:
+            if patron in sql_upper:
+                return False
+
         # Admin: sin restricciones adicionales en aplicacion (SQL Server aplica las suyas).
         if rol == "admin":
             return True

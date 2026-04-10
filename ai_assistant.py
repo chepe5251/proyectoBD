@@ -87,12 +87,14 @@ class AIAssistant:
         - catalogo.autores (id_autor, nombre_autor, apellido_autor, nacionalidad)
         - catalogo.categorias (id_categoria, nombre_categoria, descripcion)
         - catalogo.libros (id_libro, titulo, ano_publicacion, id_autor, id_categoria)
-        - operaciones.prestamos (id_prestamo, id_usuario, id_libro, fecha_prestamo, fecha_devolucion, estado)
+        - operaciones.prestamos (id_prestamo, id_usuario, id_libro, fecha_prestamo, fecha_limite, fecha_devolucion, estado)
           Nota: estado = 1 significa prestamo activo, estado = 0 significa devuelto.
+          fecha_limite: fecha maxima de devolucion del libro.
 
         Vistas disponibles (preferirlas para consultas de detalle):
         - catalogo.vista_libros_completa (id_libro, titulo, ano_publicacion, nombre_autor, apellido_autor, nombre_categoria)
         - operaciones.vista_prestamos_activos (id_prestamo, nombre_usuario, apellido_usuario, titulo, fecha_prestamo)
+        - operaciones.vista_prestamos_vencidos (id_prestamo, nombre_usuario, apellido_usuario, correo, titulo, fecha_prestamo, fecha_limite, dias_vencido) — usar para preguntas sobre prestamos vencidos o atrasados.
 
         Procedimientos almacenados disponibles:
         - EXEC personas.registrar_usuario @nombre, @apellido, @correo, @telefono
