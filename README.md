@@ -27,12 +27,13 @@ Aplicacion de escritorio que permite consultar y gestionar una base de datos de 
 El proyecto implementa un asistente conversacional con las siguientes capacidades:
 
 - **Lenguaje natural a SQL**: Google Gemini traduce preguntas en español a sentencias T-SQL ejecutables.
+- **Conversacion multi-paso con memoria**: el asistente recuerda el contexto de los ultimos 10 intercambios. Puede pedir datos adicionales (`PEDIR:`), dar instrucciones sin SQL (`INSTRUCCION:`) o registrar usuarios con hash bcrypt generado en el momento (`PENDING_HASH:`).
 - **Autenticacion segura**: correo y contraseña verificados contra `personas.usuarios` con hash bcrypt (rounds=12). La comparacion se realiza en Python, nunca en SQL Server.
 - **Control de acceso por roles (RBAC)** en dos niveles: permisos del motor SQL Server y capa de validacion en la aplicacion.
 - **Proteccion contra fuerza bruta**: bloqueo automatico de 30 segundos tras 5 intentos fallidos consecutivos por correo.
-- **Panel SQL en tiempo real**: muestra la consulta generada por la IA, el modelo usado y el estado de ejecucion.
-- **Registro de nuevos usuarios** directamente desde la aplicacion.
-- **Interfaz grafica** oscura construida con Tkinter, procesamiento en hilo secundario (la ventana nunca se congela).
+- **Panel SQL en tiempo real**: muestra la consulta generada por la IA, el modelo usado, estado de conexion y estado de ejecucion.
+- **Registro de nuevos usuarios** directamente desde la aplicacion o a traves del asistente (con hash bcrypt automatico).
+- **Interfaz grafica** oscura con tema teal, burbujas de mensaje por rol, botones de consulta rapida dinamicos segun el rol del usuario y procesamiento en hilo secundario (la ventana nunca se congela).
 
 ---
 
@@ -65,8 +66,14 @@ seguridad  ai_assistant  database_manager
 [Usuario escribe pregunta]
         │
         ▼
-AIAssistant.interpretar_pregunta()   ← llama a Google Gemini
-        │ devuelve texto con SQL
+AIAssistant.interpretar_pregunta(pregunta, historial)  ← llama a Google Gemini
+        │                                                 con contexto de los
+        │                                                 ultimos 10 turnos
+        ▼
+¿Respuesta es PEDIR:?   → muestra pregunta al usuario, actualiza historial, espera
+¿Respuesta es INSTRUCCION:? → muestra mensaje, actualiza historial, espera
+¿Respuesta es PENDING_HASH:? → extrae contraseña, genera hash bcrypt, sustituye
+        │ (en otro caso: es SQL normal)
         ▼
 BibliotecaApp._normalizar_sql()      ← limpia markdown, backticks, prefijos
         │ devuelve T-SQL limpio
@@ -86,7 +93,7 @@ DatabaseManager.ejecutar_consulta()  ← ejecuta en SQL Server bajo login del ro
 AIAssistant.formatear_respuesta_humana()  ← convierte filas en texto legible
         │
         ▼
-[Se muestra resultado en el chat]
+[Se muestra resultado en el chat — historial actualizado]
 ```
 
 ---
@@ -313,6 +320,10 @@ Crear un archivo llamado `.env` en la raiz del proyecto (al mismo nivel que `mai
 # Clave de Google Gemini (obtener en aistudio.google.com)
 GEMINI_API_KEY=tu_clave_de_gemini_aqui
 
+# Modelo de Gemini a usar (opcional, si se omite usa gemini-2.5-flash por defecto)
+# Opciones: gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash, etc.
+GEMINI_MODEL=gemini-2.5-flash
+
 # SQL Server: nombre del servidor o instancia
 # Ejemplos: localhost, DESKTOP-ABC\SQLEXPRESS, 192.168.1.10
 DB_SERVER=nombre_del_servidor
@@ -392,7 +403,7 @@ python main.py
 
 ### Pantalla de login
 
-Ingresar el **correo electronico** y la **contraseña** del usuario registrado en `personas.usuarios`:
+La card se muestra centrada en la ventana. Ingresar el **correo electronico** y la **contraseña** del usuario registrado en `personas.usuarios`:
 
 ```
 Correo:    andres.morales@outlook.com
@@ -405,7 +416,7 @@ Contraseña: admin2026
 
 ### Pantalla de registro
 
-Completar: nombre, apellido, correo, telefono, contraseña y confirmacion. El sistema:
+Formulario con scroll (rueda del mouse). Completar: nombre, apellido, correo, telefono, contraseña y confirmacion. El sistema:
 - Valida que el correo tenga formato valido.
 - Exige minimo 8 caracteres en el telefono y 6 en la contraseña.
 - Verifica que las contraseñas coincidan.
@@ -416,7 +427,12 @@ Completar: nombre, apellido, correo, telefono, contraseña y confirmacion. El si
 
 **Panel izquierdo — Chat:**
 
-Escribir preguntas en lenguaje natural y presionar Enter o el boton "Enviar":
+Escribir preguntas en lenguaje natural y presionar Enter o el boton **"Enviar ➤"**. Los mensajes se muestran en burbujas con estilo diferente segun el autor (usuario, asistente, sistema).
+
+El asistente mantiene el contexto de los ultimos 10 intercambios. Puede:
+- Pedir datos que faltan antes de ejecutar una accion (`PEDIR:`).
+- Dar una explicacion o instruccion sin ejecutar SQL (`INSTRUCCION:`).
+- Registrar usuarios a traves del chat generando el hash bcrypt automaticamente.
 
 ```
 ¿Cuantos libros hay registrados?
@@ -425,16 +441,24 @@ Libros de Gabriel Garcia Marquez
 Libros de categoria Tecnologia
 ¿Que prestamos estan vencidos?
 Buscar libro "1984"
+Registrar un nuevo usuario
 ```
 
-Los tres botones de consulta rapida envian preguntas predefinidas.
+Los botones de consulta rapida son **dinamicos segun el rol** del usuario logueado:
+
+| Rol | Botones |
+|-----|---------|
+| `admin` | Cuantos libros hay, Prestamos activos, Registrar nuevo libro, Prestamos vencidos |
+| `operativo` | Cuantos libros hay, Prestamos activos, Prestamos vencidos, Lista de autores |
+| `usuario` | Cuantos libros hay, Libros de tecnologia, Lista de autores, Libros disponibles |
 
 **Panel derecho — SQL generado:**
 
 Muestra en tiempo real:
 - La sentencia T-SQL que la IA genero para responder la pregunta.
+- Estado de conexion a la base de datos.
 - El modelo de Gemini que proceso la solicitud.
-- El estado: `Pendiente de validacion`, `⚠ Bloqueado por permisos de rol`, `✓ Ejecutado correctamente` o `✗ Error en base de datos`.
+- El estado de ejecucion: `Pendiente de validacion`, `Recopilando informacion`, `⚠ Bloqueado por permisos de rol`, `✓ Ejecutado correctamente` o `✗ Error en base de datos`.
 
 ---
 
@@ -470,6 +494,9 @@ Estos usuarios se insertan automaticamente al ejecutar `database.sql`:
 | SQL con placeholder `?` incompleto | Mensaje pidiendo reformular la pregunta |
 | Accion bloqueada por RBAC | Mensaje explicando los permisos del rol; SQL visible en panel derecho |
 | SQL con patron de injection (`--`, `OR 1=1`) | Bloqueado por `validar_accion()` antes de ejecutar |
+| IA pide mas datos (`PEDIR:`) | El asistente hace una pregunta de seguimiento; el historial se actualiza |
+| IA da una instruccion sin SQL (`INSTRUCCION:`) | Se muestra el mensaje en el chat sin ejecutar nada |
+| Registro de usuario via chat (`PENDING_HASH:`) | La contraseña en texto plano se convierte a hash bcrypt antes de ejecutar |
 | Error de base de datos | Mensaje en el chat; detalle tecnico en consola |
 | Consulta retorna muchas filas | Limitado automaticamente a 100 filas (`SELECT TOP 100`) |
 | Servidor SQL Server sin respuesta | Timeout de conexion de 5 segundos (no bloquea la UI) |
