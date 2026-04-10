@@ -89,6 +89,7 @@ class BibliotecaApp:
         self.ent_reg_confirmar = None
 
         self.historial_conversacion = []
+        self._placeholder = "Escribí tu pregunta en lenguaje natural..."
 
         from config import GEMINI_KEY
         if not GEMINI_KEY:
@@ -176,16 +177,24 @@ class BibliotecaApp:
             fg=self.theme["text"],
             font=(self.fonts["body"], 10, "bold"),
         ).pack(anchor="w")
-        self.ent_correo = tk.Entry(
+        _box_correo = tk.Frame(
             form_panel,
+            bg=self.theme["input_bg"],
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+        )
+        _box_correo.pack(anchor="w", pady=(6, 14))
+        self.ent_correo = tk.Entry(
+            _box_correo,
             width=38,
             bg=self.theme["input_bg"],
             fg=self.theme["text"],
             insertbackground=self.theme["text"],
             relief=tk.FLAT,
+            bd=0,
             font=(self.fonts["body"], 11),
         )
-        self.ent_correo.pack(anchor="w", ipady=7, pady=(6, 14))
+        self.ent_correo.pack(fill=tk.X, padx=8, ipady=7)
 
         tk.Label(
             form_panel,
@@ -194,17 +203,25 @@ class BibliotecaApp:
             fg=self.theme["text"],
             font=(self.fonts["body"], 10, "bold"),
         ).pack(anchor="w")
-        self.ent_pass = tk.Entry(
+        _box_pass = tk.Frame(
             form_panel,
+            bg=self.theme["input_bg"],
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+        )
+        _box_pass.pack(anchor="w", pady=(6, 20))
+        self.ent_pass = tk.Entry(
+            _box_pass,
             width=38,
             show="*",
             bg=self.theme["input_bg"],
             fg=self.theme["text"],
             insertbackground=self.theme["text"],
             relief=tk.FLAT,
+            bd=0,
             font=(self.fonts["body"], 11),
         )
-        self.ent_pass.pack(anchor="w", ipady=7, pady=(6, 20))
+        self.ent_pass.pack(fill=tk.X, padx=8, ipady=7)
 
         btn_login = tk.Button(
             form_panel,
@@ -226,14 +243,14 @@ class BibliotecaApp:
             form_panel,
             text="Registrar usuario",
             command=self.pantalla_registro,
-            bg=self.theme["panel_soft"],
-            fg=self.theme["muted"],
-            activebackground=self.theme["border"],
-            activeforeground=self.theme["text"],
+            bg="#1d4ed8",
+            fg="#dbeafe",
+            activebackground="#1e40af",
+            activeforeground="#eff6ff",
             relief=tk.FLAT,
             padx=14,
-            pady=6,
-            font=(self.fonts["body"], 9),
+            pady=7,
+            font=(self.fonts["body"], 9, "bold"),
             cursor="hand2",
         )
         btn_registro.pack(anchor="w", pady=(8, 0))
@@ -448,17 +465,25 @@ class BibliotecaApp:
                 fg=self.theme["text"],
                 font=(self.fonts["body"], 10, "bold"),
             ).pack(anchor="w")
-            ent = tk.Entry(
+            _box = tk.Frame(
                 form_panel,
+                bg=self.theme["input_bg"],
+                highlightthickness=1,
+                highlightbackground=self.theme["border"],
+            )
+            _box.pack(anchor="w", pady=(4, 10))
+            ent = tk.Entry(
+                _box,
                 width=38,
                 show="*" if oculto else "",
                 bg=self.theme["input_bg"],
                 fg=self.theme["text"],
                 insertbackground=self.theme["text"],
                 relief=tk.FLAT,
+                bd=0,
                 font=(self.fonts["body"], 11),
             )
-            ent.pack(anchor="w", ipady=6, pady=(4, 10))
+            ent.pack(fill=tk.X, padx=8, ipady=6)
             setattr(self, attr, ent)
 
         self.ent_reg_confirmar.bind("<Return>", lambda _e: self.ejecutar_registro())
@@ -480,7 +505,7 @@ class BibliotecaApp:
 
         tk.Button(
             form_panel,
-            text="Volver al login",
+            text="← Volver al login",
             command=self.pantalla_login,
             bg=self.theme["panel_soft"],
             fg=self.theme["muted"],
@@ -488,7 +513,7 @@ class BibliotecaApp:
             activeforeground=self.theme["text"],
             relief=tk.FLAT,
             padx=14,
-            pady=6,
+            pady=7,
             font=(self.fonts["body"], 9),
             cursor="hand2",
         ).pack(anchor="w", pady=(8, 0))
@@ -607,11 +632,28 @@ class BibliotecaApp:
         tools = tk.Frame(left, bg=self.theme["bg"], pady=10)
         tools.pack(fill=tk.X)
 
-        consulta_rapida = [
-            "Cuantos libros hay registrados?",
-            "Muestrame los libros populares",
-            "Lista de autores registrados",
-        ]
+        rol = (self.seguridad.usuario_actual if self.seguridad else {}).get("rol", "usuario")  # type: ignore[union-attr]
+        if rol == "admin":
+            consulta_rapida = [
+                "Cuántos libros hay registrados?",
+                "Préstamos activos",
+                "Registrar nuevo libro",
+                "Préstamos vencidos",
+            ]
+        elif rol == "operativo":
+            consulta_rapida = [
+                "Cuántos libros hay registrados?",
+                "Préstamos activos",
+                "Préstamos vencidos",
+                "Lista de autores",
+            ]
+        else:
+            consulta_rapida = [
+                "Cuántos libros hay registrados?",
+                "Libros de tecnología",
+                "Lista de autores",
+                "Libros disponibles",
+            ]
         self.botones_rapidos = []
         for texto in consulta_rapida:
             boton = tk.Button(
@@ -645,14 +687,17 @@ class BibliotecaApp:
         self.ent_pregunta = tk.Entry(
             input_box,
             bg=self.theme["input_bg"],
-            fg=self.theme["text"],
+            fg=self.theme["muted"],
             insertbackground=self.theme["text"],
             relief=tk.FLAT,
             bd=0,
             font=(self.fonts["body"], 11),
         )
         self.ent_pregunta.pack(fill=tk.X, padx=10, ipady=9)
+        self.ent_pregunta.insert(0, self._placeholder)
         self.ent_pregunta.bind("<Return>", lambda _e: self.procesar_consulta())
+        self.ent_pregunta.bind("<FocusIn>", self._on_entry_focus_in)
+        self.ent_pregunta.bind("<FocusOut>", self._on_entry_focus_out)
 
         self.btn_enviar = tk.Button(
             composer,
@@ -694,6 +739,9 @@ class BibliotecaApp:
             state="disabled",
         )
         self.txt_sql.pack(fill=tk.BOTH, expand=True, pady=(6, 8))
+        self.txt_sql.config(state="normal")
+        self.txt_sql.insert(tk.END, "— Aquí aparecerá el SQL generado por la IA —")
+        self.txt_sql.config(state="disabled")
 
         tk.Frame(right, bg=self.theme["border"], height=1).pack(fill=tk.X, pady=(0, 6))
 
@@ -784,19 +832,14 @@ class BibliotecaApp:
         usuario = self.seguridad.usuario_actual or {}
         nombre = str(usuario.get("nombre") or "usuario")
         permisos = self.seguridad.describir_permisos()
-
-        self.mostrar_en_chat(
-            f"Bienvenido/a {nombre}. Soy tu bibliotecario virtual y estoy listo para ayudarte.",
-            autor="Sistema",
+        mensaje = (
+            f"Bienvenido/a {nombre}. Soy tu bibliotecario virtual.\n"
+            f"{permisos}\n"
+            f"Podés preguntarme en lenguaje natural. Ejemplos: "
+            f"'cuántos libros hay', 'registrar un nuevo libro', "
+            f"'préstamos vencidos', 'devolver el libro X'."
         )
-        self.mostrar_en_chat(
-            f"{permisos} Puedes escribirme en lenguaje natural.",
-            autor="Sistema",
-        )
-        self.mostrar_en_chat(
-            "Ejemplos: 'cuantos libros hay', 'libros populares', 'estado del usuario aleja@correo.com'.",
-            autor="Sistema",
-        )
+        self.mostrar_en_chat(mensaje, autor="Sistema")
 
     def _usar_consulta_rapida(self, consulta):
         self.ent_pregunta.delete(0, tk.END)
@@ -872,9 +915,19 @@ class BibliotecaApp:
 
         return sql
 
+    def _on_entry_focus_in(self, _event):
+        if self.ent_pregunta and self.ent_pregunta.get() == self._placeholder:
+            self.ent_pregunta.delete(0, tk.END)
+            self.ent_pregunta.config(fg=self.theme["text"])
+
+    def _on_entry_focus_out(self, _event):
+        if self.ent_pregunta and not self.ent_pregunta.get().strip():
+            self.ent_pregunta.insert(0, self._placeholder)
+            self.ent_pregunta.config(fg=self.theme["muted"])
+
     def procesar_consulta(self):
         pregunta = self.ent_pregunta.get().strip() if self.ent_pregunta else ""
-        if not pregunta:
+        if not pregunta or pregunta == self._placeholder:
             return
 
         self.mostrar_en_chat(pregunta, autor="Tu")
