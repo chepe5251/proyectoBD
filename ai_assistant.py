@@ -333,11 +333,11 @@ class AIAssistant:
         preview = []
         for fila in filas[:limite_filas]:
             columnas = self._fila_a_lista(fila)
-            preview.append(" | ".join(self._to_texto(c) for c in columnas))
+            preview.append("— " + " · ".join(self._to_texto(c) for c in columnas))
 
-        cuerpo = "\n".join(f"- {linea}" for linea in preview)
+        cuerpo = "\n".join(preview)
         sufijo = "" if len(filas) <= limite_filas else f"\n... y {len(filas) - limite_filas} filas mas."
-        return f"Con gusto. Encontre {len(filas)} registros:\n{cuerpo}{sufijo}"
+        return f"Encontré {len(filas)} resultado(s):\n{cuerpo}{sufijo}"
 
 
 class AIServiceError(RuntimeError):

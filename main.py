@@ -40,8 +40,13 @@ class BibliotecaApp:
     def __init__(self, root):
         self.root = root
         self.root.title("ULATINA | Asistente de Biblioteca")
-        self.root.geometry("980x700")
+        self.root.resizable(True, True)
         self.root.minsize(860, 620)
+        self.root.update_idletasks()
+        w, h = 980, 700
+        x = (self.root.winfo_screenwidth() // 2) - (w // 2)
+        y = (self.root.winfo_screenheight() // 2) - (h // 2)
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
 
         self.theme = {
             "bg": "#0f172a",
@@ -79,6 +84,7 @@ class BibliotecaApp:
         self.txt_sql = None
         self.lbl_modelo = None
         self.lbl_sql_estado = None
+        self.lbl_conexion = None
         self.botones_rapidos = []
 
         self.ent_reg_nombre = None
@@ -102,20 +108,26 @@ class BibliotecaApp:
         self.limpiar_pantalla()
 
         container = tk.Frame(self.root, bg=self.theme["bg"])
-        container.pack(fill=tk.BOTH, expand=True, padx=30, pady=30)
+        container.pack(fill=tk.BOTH, expand=True)
 
         card = tk.Frame(
             container,
             bg=self.theme["panel"],
             highlightthickness=1,
             highlightbackground=self.theme["border"],
-            padx=0,
-            pady=0,
         )
-        card.pack(fill=tk.BOTH, expand=True)
+        card.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.88, relheight=0.82)
 
         info_panel = tk.Frame(card, bg=self.theme["accent_soft"], padx=28, pady=32)
         info_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            info_panel,
+            text="📚",
+            bg=self.theme["accent_soft"],
+            fg="#e6fffb",
+            font=(self.fonts["body"], 42),
+        ).pack(anchor="w", pady=(0, 12))
 
         tk.Label(
             info_panel,
@@ -151,6 +163,9 @@ class BibliotecaApp:
                 justify="left",
             ).pack(anchor="w", pady=2)
 
+        separador = tk.Frame(card, bg=self.theme["border"], width=2)
+        separador.pack(side=tk.LEFT, fill=tk.Y, pady=20)
+
         form_panel = tk.Frame(card, bg=self.theme["panel"], padx=34, pady=34)
         form_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -174,7 +189,7 @@ class BibliotecaApp:
             form_panel,
             text="Correo electronico",
             bg=self.theme["panel"],
-            fg=self.theme["text"],
+            fg=self.theme["accent"],
             font=(self.fonts["body"], 10, "bold"),
         ).pack(anchor="w")
         _box_correo = tk.Frame(
@@ -200,7 +215,7 @@ class BibliotecaApp:
             form_panel,
             text="Contrasena",
             bg=self.theme["panel"],
-            fg=self.theme["text"],
+            fg=self.theme["accent"],
             font=(self.fonts["body"], 10, "bold"),
         ).pack(anchor="w")
         _box_pass = tk.Frame(
@@ -430,8 +445,24 @@ class BibliotecaApp:
                 anchor="w",
             ).pack(anchor="w", pady=2)
 
-        form_panel = tk.Frame(card, bg=self.theme["panel"], padx=34, pady=34)
-        form_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Panel derecho con Canvas scrollable para el formulario
+        form_outer = tk.Frame(card, bg=self.theme["panel"])
+        form_outer.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(form_outer, bg=self.theme["panel"], highlightthickness=0)
+        scrollbar = tk.Scrollbar(form_outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        form_panel = tk.Frame(canvas, bg=self.theme["panel"], padx=34, pady=34)
+        frame_id = canvas.create_window((0, 0), window=form_panel, anchor="nw")
+
+        def _on_frame_configure(_e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        form_panel.bind("<Configure>", _on_frame_configure)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(frame_id, width=e.width))
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
         tk.Label(
             form_panel,
@@ -462,7 +493,7 @@ class BibliotecaApp:
                 form_panel,
                 text=label,
                 bg=self.theme["panel"],
-                fg=self.theme["text"],
+                fg=self.theme["accent"],
                 font=(self.fonts["body"], 10, "bold"),
             ).pack(anchor="w")
             _box = tk.Frame(
@@ -574,10 +605,18 @@ class BibliotecaApp:
 
         tk.Label(
             top,
+            text="📚",
+            bg=self.theme["panel"],
+            fg=self.theme["accent"],
+            font=(self.fonts["body"], 20),
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Label(
+            top,
             text="Asistente de Biblioteca",
             bg=self.theme["panel"],
             fg=self.theme["text"],
-            font=(self.fonts["title"], 18, "bold"),
+            font=(self.fonts["title"], 16, "bold"),
         ).pack(side=tk.LEFT)
 
         chip = tk.Label(
@@ -599,6 +638,9 @@ class BibliotecaApp:
             font=(self.fonts["body"], 9),
         )
         self.lbl_estado.pack(side=tk.RIGHT)
+
+        separador_top = tk.Frame(self.root, bg=self.theme["accent"], height=2)
+        separador_top.pack(fill=tk.X)
 
         paned = tk.PanedWindow(
             self.root,
@@ -674,13 +716,14 @@ class BibliotecaApp:
             self.botones_rapidos.append(boton)
 
         composer = tk.Frame(left, bg=self.theme["bg"])
-        composer.pack(fill=tk.X, pady=(2, 0))
+        composer.pack(fill=tk.X, pady=(8, 8))
 
         input_box = tk.Frame(
             composer,
             bg=self.theme["input_bg"],
             highlightthickness=1,
             highlightbackground=self.theme["border"],
+            padx=6,
         )
         input_box.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -693,7 +736,7 @@ class BibliotecaApp:
             bd=0,
             font=(self.fonts["body"], 11),
         )
-        self.ent_pregunta.pack(fill=tk.X, padx=10, ipady=9)
+        self.ent_pregunta.pack(fill=tk.X, padx=10, ipady=12)
         self.ent_pregunta.insert(0, self._placeholder)
         self.ent_pregunta.bind("<Return>", lambda _e: self.procesar_consulta())
         self.ent_pregunta.bind("<FocusIn>", self._on_entry_focus_in)
@@ -701,15 +744,15 @@ class BibliotecaApp:
 
         self.btn_enviar = tk.Button(
             composer,
-            text="Enviar",
+            text="Enviar ➤",
             command=self.procesar_consulta,
             bg=self.theme["accent"],
             fg="#042f2e",
             activebackground="#2dd4bf",
             activeforeground="#022c22",
             relief=tk.FLAT,
-            padx=16,
-            pady=9,
+            padx=20,
+            pady=12,
             font=(self.fonts["body"], 10, "bold"),
             cursor="hand2",
         )
@@ -721,12 +764,24 @@ class BibliotecaApp:
 
         tk.Label(
             right,
-            text="SQL generado",
+            text="⚡ SQL generado",
             bg=self.theme["panel"],
             fg=self.theme["accent"],
-            font=(self.fonts["body"], 10, "bold"),
+            font=(self.fonts["body"], 11, "bold"),
             anchor="w",
         ).pack(fill=tk.X)
+
+        self.lbl_conexion = tk.Label(
+            right,
+            text="● Conectado a biblioteca",
+            bg=self.theme["panel"],
+            fg=self.theme["ok"],
+            font=(self.fonts["body"], 8),
+            anchor="w",
+        )
+        self.lbl_conexion.pack(fill=tk.X, pady=(0, 8))
+
+        tk.Frame(right, bg=self.theme["border"], height=1).pack(fill=tk.X, pady=(0, 6))
 
         self.txt_sql = scrolledtext.ScrolledText(
             right,
@@ -788,18 +843,13 @@ class BibliotecaApp:
             self.lbl_sql_estado.config(text=estado)
 
     def _configurar_tags_chat(self):
+        if not self.txt_chat:
+            return
         self.txt_chat.tag_configure(
             "assistant_head",
             foreground="#2dd4bf",
             font=(self.fonts["title"], 10, "bold"),
             spacing1=6,
-        )
-        self.txt_chat.tag_configure(
-            "assistant_body",
-            foreground=self.theme["text"],
-            lmargin1=12,
-            lmargin2=12,
-            spacing3=10,
         )
         self.txt_chat.tag_configure(
             "user_head",
@@ -808,24 +858,45 @@ class BibliotecaApp:
             spacing1=6,
         )
         self.txt_chat.tag_configure(
-            "user_body",
-            foreground="#dbeafe",
-            lmargin1=12,
-            lmargin2=12,
-            spacing3=10,
-        )
-        self.txt_chat.tag_configure(
             "system_head",
             foreground="#f59e0b",
             font=(self.fonts["title"], 10, "bold"),
             spacing1=6,
         )
         self.txt_chat.tag_configure(
-            "system_body",
-            foreground="#fde68a",
+            "burbuja_user",
+            background="#1d4ed8",
+            foreground="#dbeafe",
+            lmargin1=200,
+            lmargin2=200,
+            rmargin=12,
+            spacing1=4,
+            spacing3=4,
+        )
+        self.txt_chat.tag_configure(
+            "burbuja_asistente",
+            background="#1f2937",
+            foreground=self.theme["text"],
             lmargin1=12,
             lmargin2=12,
-            spacing3=10,
+            rmargin=200,
+            spacing1=4,
+            spacing3=4,
+        )
+        self.txt_chat.tag_configure(
+            "burbuja_sistema",
+            background="#292524",
+            foreground="#fde68a",
+            lmargin1=40,
+            lmargin2=40,
+            rmargin=40,
+            spacing1=4,
+            spacing3=4,
+        )
+        self.txt_chat.tag_configure(
+            "separador_msg",
+            spacing1=6,
+            spacing3=6,
         )
 
     def _mostrar_bienvenida(self):
@@ -1091,15 +1162,19 @@ class BibliotecaApp:
         hora = time.strftime("%H:%M")
 
         if autor_key.lower().startswith("tu"):
-            tag_head, tag_body = "user_head", "user_body"
+            tag_head = "user_head"
+            tag_body = "burbuja_user"
         elif autor_key.lower().startswith("sistema"):
-            tag_head, tag_body = "system_head", "system_body"
+            tag_head = "system_head"
+            tag_body = "burbuja_sistema"
         else:
-            tag_head, tag_body = "assistant_head", "assistant_body"
+            tag_head = "assistant_head"
+            tag_body = "burbuja_asistente"
 
         self.txt_chat.config(state="normal")
-        self.txt_chat.insert(tk.END, f"{autor_key}  {hora}\n", tag_head)
-        self.txt_chat.insert(tk.END, f"{texto}\n\n", tag_body)
+        self.txt_chat.insert(tk.END, f" {autor_key}  {hora}\n", tag_head)
+        self.txt_chat.insert(tk.END, f" {texto} \n", tag_body)
+        self.txt_chat.insert(tk.END, "\n", "separador_msg")
         self.txt_chat.config(state="disabled")
         self.txt_chat.see(tk.END)
 
