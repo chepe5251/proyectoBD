@@ -13,6 +13,8 @@ CREATE SCHEMA operaciones;
 GO
 CREATE SCHEMA personas;
 GO
+CREATE SCHEMA auditoria;
+GO
 
 -- =============================================
 -- Tablas
@@ -81,6 +83,23 @@ CREATE TABLE operaciones.prestamos (
         FOREIGN KEY (id_libro) REFERENCES catalogo.libros(id_libro),
     CONSTRAINT chk_fecha_limite
         CHECK (fecha_limite > fecha_prestamo)
+);
+GO
+
+-- Registro de auditoria del asistente IA
+-- Cada consulta procesada (ejecutada, bloqueada, error) queda registrada aqui.
+-- resultado: 'ejecutado' | 'bloqueado' | 'cuota_ia' | 'conversacional' | 'error'
+CREATE TABLE auditoria.consultas (
+    id_log         INT          IDENTITY(1,1) NOT NULL,
+    id_usuario     INT          NULL,
+    nombre_usuario VARCHAR(200) NULL,
+    pregunta       VARCHAR(MAX) NULL,
+    sql_generado   VARCHAR(MAX) NULL,
+    resultado      VARCHAR(20)  NULL,
+    fecha_hora     DATETIME     NOT NULL DEFAULT GETDATE(),
+    CONSTRAINT PK_AuditoriaConsultas PRIMARY KEY (id_log),
+    CONSTRAINT FK_AuditoriaUsuario FOREIGN KEY (id_usuario)
+        REFERENCES personas.usuarios(id_usuario) ON DELETE SET NULL
 );
 GO
 
@@ -179,6 +198,16 @@ GO
 -- Ejecutado en cada login; debe ser un Index Seek, nunca un Scan.
 CREATE INDEX IX_LoginCorreo
 ON personas.usuarios(correo);
+GO
+
+-- IX_AuditoriaFecha: acelera ORDER BY fecha_hora DESC en el panel Admin.
+CREATE INDEX IX_AuditoriaFecha
+ON auditoria.consultas(fecha_hora DESC);
+GO
+
+-- IX_AuditoriaUsuario: acelera filtros por usuario en la auditoria.
+CREATE INDEX IX_AuditoriaUsuario
+ON auditoria.consultas(id_usuario);
 GO
 
 -- =============================================
@@ -355,6 +384,18 @@ GO
 
 -- Usuario: solo busqueda de libros
 GRANT EXECUTE ON catalogo.buscar_libro TO rol_usuario;
+GO
+
+-- =============================================
+-- Permisos de auditoria
+-- Admin ya tiene CONTROL sobre el schema; operativo y usuario
+-- necesitan INSERT para registrar sus propias consultas.
+-- =============================================
+GRANT CONTROL ON SCHEMA::auditoria TO rol_admin;
+GO
+GRANT INSERT ON auditoria.consultas TO rol_operativo;
+GO
+GRANT INSERT ON auditoria.consultas TO rol_usuario;
 GO
 
 -- =============================================

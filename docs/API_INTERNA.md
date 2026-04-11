@@ -263,6 +263,46 @@ Error de cuota agotada (HTTP 429).
 
 ---
 
+## `app_services.py`
+
+### Clase `RegistroUsuarioService`
+
+Centraliza la validacion del formulario de registro, la generacion del hash bcrypt y la construccion
+del `EXEC personas.registrar_usuario` reutilizado por GUI y por `PENDING_HASH:`.
+
+### Clase `ConsultaService`
+
+Convierte una respuesta de IA en una `ConsultaPreparada` reutilizable fuera de Tkinter.
+
+Responsabilidades principales:
+- Normalizar SQL generado por Gemini.
+- Resolver `PENDING_HASH:` sin duplicar la logica de registro.
+- Enmascarar `@password_hash` en el SQL visible.
+- Aplicar `TOP 100` a `SELECT` sin limite.
+
+---
+
+## `chat_controller.py`
+
+### Clase `ChatController`
+
+Controller de negocio del flujo conversacional. No depende de Tkinter ni de callbacks de UI.
+
+Responsabilidades principales:
+- Resolver cuota de IA y traducir errores del asistente a resultados estructurados.
+- Interpretar `PEDIR:`, `INSTRUCCION:` y `PENDING_HASH:`.
+- Delegar preparacion SQL a `ConsultaService`.
+- Validar permisos con `SecurityManager` y ejecutar con `DatabaseManager`.
+- Devolver un `ResultadoConsulta` con mensajes, SQL visible, estado e historial.
+
+### Dataclasses
+
+- `MensajeChat`: mensaje listo para renderizar en la GUI.
+- `EntradaHistorial`: entrada de memoria conversacional para el siguiente turno.
+- `ResultadoConsulta`: salida estructurada del controller.
+
+---
+
 ## `main.py`
 
 ### Clase `BibliotecaApp`
@@ -291,8 +331,10 @@ La card queda centrada en la ventana con `place(relx=0.5, rely=0.5, anchor="cent
 
 #### `pantalla_registro()`
 
-Renderiza el formulario de registro de usuario nuevo con Canvas scrollable (rueda del mouse).
-Asigna rol `usuario` por defecto. El hash bcrypt se genera en Python antes de llamar al SP.
+Renderiza el formulario de registro de usuario nuevo con Canvas scrollable.
+El scroll de rueda se activa solo mientras el cursor esta sobre el canvas, evitando bindings globales residuales.
+Asigna rol `usuario` por defecto. La validacion, el hashing bcrypt y la construccion del `EXEC personas.registrar_usuario`
+se comparten con el flujo conversacional `PENDING_HASH:`.
 
 ---
 
@@ -309,29 +351,18 @@ Renderiza la ventana principal de chat:
 
 Punto de entrada del flujo de consulta. Llamado al presionar Enter o el boton "Enviar ➤".
 Verifica que el campo no tenga el placeholder antes de procesar.
-Deshabilita los controles de entrada y lanza `_procesar_en_hilo()` en un hilo secundario.
+Deshabilita los controles de entrada y lanza `_procesar_consulta_async()` en un hilo secundario.
 
 ---
 
-#### `_procesar_en_hilo(pregunta)`
+#### `_procesar_consulta_async(pregunta)`
 
-Ejecuta el flujo completo NL->SQL->DB en un hilo secundario.
+Puente asincronico entre Tkinter y `ChatController`.
 
-1. Verifica bloqueo de cuota de IA (`ai_blocked_until` protegido con `threading.Lock`).
-2. Llama a `AIAssistant.interpretar_pregunta(pregunta, self.historial_conversacion)`.
-3. Intercepta prefijos especiales antes de normalizar:
-   - `PEDIR:` → muestra pregunta en chat, actualiza historial, retorna.
-   - `INSTRUCCION:` → muestra mensaje en chat, actualiza historial, retorna.
-   - `PENDING_HASH:` → extrae contrasena en texto plano, genera hash bcrypt, sustituye en SQL.
-4. Normaliza el SQL con `_normalizar_sql()`.
-5. Valida la accion con `SecurityManager.validar_accion()`.
-6. Inyecta `TOP 100` si el SELECT no tiene TOP.
-7. Ejecuta con `DatabaseManager.ejecutar_consulta()`.
-8. Formatea y muestra el resultado.
-9. Actualiza historial (pregunta + SQL), recorta a 10 entradas.
-
-Todas las actualizaciones de la UI se despachan al hilo principal con `root.after(0, callback)`.
-El bloque `finally` siempre llama a `_finalizar_consulta()`.
+1. Toma un snapshot de `historial_conversacion` y `ai_blocked_until`.
+2. Invoca `ChatController.procesar_consulta(...)` fuera del hilo principal.
+3. Reinyecta el `ResultadoConsulta` a Tkinter con `root.after(0, ...)`.
+4. Delega la actualizacion visual a `_aplicar_resultado_consulta()` y el cierre de estado a `_finalizar_consulta()`.
 
 ---
 
@@ -339,19 +370,6 @@ El bloque `finally` siempre llama a `_finalizar_consulta()`.
 
 Restaura el estado de la UI tras completar una consulta (siempre en hilo principal).
 Habilita controles, actualiza el indicador de estado y devuelve el foco al campo de entrada.
-
----
-
-#### `_normalizar_sql(sql_generado) -> str` _(estatico)_
-
-Limpia el texto retornado por Gemini y extrae el SQL ejecutable.
-
-Transformaciones aplicadas (en orden):
-1. Extrae contenido de bloques ` ```sql ... ``` `.
-2. Elimina el prefijo `SQL:`.
-3. Convierte identificadores con backticks a corchetes `[nombre]`, o los elimina si son palabras clave SQL.
-4. Reemplaza backticks restantes por comillas simples.
-5. Recorta el texto desde la primera palabra clave SQL valida (`SELECT`, `EXEC`, `WITH`).
 
 ---
 

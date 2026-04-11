@@ -25,6 +25,18 @@ import time
 
 import bcrypt
 
+from config import (
+    SQL_LOGIN_ADMIN,
+    SQL_LOGIN_APP,
+    SQL_LOGIN_OPERATIVO,
+    SQL_LOGIN_USUARIO,
+    SQL_PASS_ADMIN,
+    SQL_PASS_APP,
+    SQL_PASS_OPERATIVO,
+    SQL_PASS_USUARIO,
+)
+from database_manager import DatabaseManager
+
 _log = logging.getLogger(__name__)
 
 
@@ -114,14 +126,6 @@ class SecurityManager:
         Returns:
             bool: True si la autenticacion es exitosa, False en caso contrario.
         """
-        from database_manager import DatabaseManager
-        from config import (
-            SQL_LOGIN_APP, SQL_PASS_APP,
-            SQL_LOGIN_ADMIN, SQL_PASS_ADMIN,
-            SQL_LOGIN_OPERATIVO, SQL_PASS_OPERATIVO,
-            SQL_LOGIN_USUARIO, SQL_PASS_USUARIO,
-        )
-
         # --- Proteccion fuerza bruta ---
         bloqueado, segundos = self._esta_bloqueado(correo)
         if bloqueado:

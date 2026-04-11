@@ -16,10 +16,11 @@ Arquitectura:
       de la base de datos biblioteca.
 """
 
-from config import GEMINI_KEY
 import os
 import re
 from typing import Any, Optional
+
+import config
 
 # --- Gestión de Dependencias del SDK ---
 # Se implementa un mecanismo de fallback para asegurar la resiliencia del sistema
@@ -55,7 +56,7 @@ class AIAssistant:
             ValueError: Si GEMINI_API_KEY no esta configurada en el entorno.
             ImportError: Si ningun SDK de Google Gemini esta instalado.
         """
-        if not GEMINI_KEY:
+        if not config.GEMINI_KEY:
             raise ValueError("Acceso denegado: GEMINI_API_KEY es nula o inválida en el entorno (.env).")
 
         # Candidatos de modelo en orden de preferencia.
@@ -73,9 +74,9 @@ class AIAssistant:
 
         # Inicialización del cliente según el SDK detectado en tiempo de ejecución.
         if _SDK == "new":
-            self.client = genai.Client(api_key=GEMINI_KEY)
+            self.client = genai.Client(api_key=config.GEMINI_KEY)
         else:
-            legacy_genai.configure(api_key=GEMINI_KEY)
+            legacy_genai.configure(api_key=config.GEMINI_KEY)
             self.model = legacy_genai.GenerativeModel(self.model_name)
         
         # Definición del esquema técnico del dominio (Data Dictionary context).

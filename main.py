@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Modulo: main.py
 Descripcion: Punto de entrada y capa de presentacion (GUI) construida con Tkinter.
@@ -5,28 +6,43 @@ Descripcion: Punto de entrada y capa de presentacion (GUI) construida con Tkinte
 
 Responsabilidades:
     - Renderizar la interfaz grafica con tema oscuro (teal accent).
-    - Orquestar el flujo completo: login -> NL -> SQL -> validacion -> ejecucion -> display.
-    - Normalizar el SQL generado por la IA antes de ejecutarlo.
+    - Coordinar el flujo visual: login -> chat -> renderizado de resultados.
+    - Delegar el negocio conversacional a un controller y servicios auxiliares.
     - Gestionar el estado de la UI (bloqueo de inputs, indicador de estado, cuota de IA).
 
 Flujo de autenticacion:
     1. El usuario ingresa su correo electronico y contrasena.
-    2. SecurityManager.login() calcula SHA-256 de la contrasena y verifica
+    2. SecurityManager.login() obtiene el hash bcrypt almacenado y verifica
        contra personas.usuarios via el login auxiliar SQL_LOGIN_APP.
     3. Si tiene exito, DatabaseManager se reconstruye con el login de SQL Server
        correspondiente al rol del usuario (admin / operativo / usuario).
     4. Todas las consultas posteriores se ejecutan bajo esa identidad autenticada.
 """
 
-import re
+import logging
+import os
 import threading
 import time
 import tkinter as tk
 from tkinter import messagebox, scrolledtext
 
-from ai_assistant import AIAssistant, AIQuotaExceededError, AIServiceError
+from dotenv import load_dotenv
+
+import config
+from app_services import (
+    ConsultaService,
+    RegistroUsuarioData,
+    RegistroUsuarioService,
+)
+from ai_assistant import AIAssistant
+from chat_controller import ChatController, MensajeChat, ResultadoConsulta
+from config import SQL_LOGIN_OPERATIVO, SQL_PASS_OPERATIVO
 from database_manager import DatabaseManager
+from features import AdminPanel, AyudaPanel, BusquedaPanel, DashboardPanel, MENSAJES
 from seguridad import SecurityManager
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class BibliotecaApp:
@@ -74,6 +90,8 @@ class BibliotecaApp:
         self.db = None       # Se construye con las credenciales del usuario tras el login.
         self.asistente = None  # Se instancia despues del login exitoso.
         self.seguridad = None
+        self.registro_service = RegistroUsuarioService()
+        self.consulta_service = ConsultaService(self.registro_service)
         self.ai_blocked_until = 0.0
         self._ai_lock = threading.Lock()
 
@@ -87,6 +105,11 @@ class BibliotecaApp:
         self.lbl_conexion = None
         self.botones_rapidos = []
 
+        # Navegacion entre paneles (se inicializa en pantalla_asistente)
+        self._paneles: dict[str, tk.Frame] = {}
+        self._nav_botones: dict[str, tk.Button] = {}
+        self._contenido: tk.Frame | None = None
+
         self.ent_reg_nombre = None
         self.ent_reg_apellido = None
         self.ent_reg_correo = None
@@ -96,9 +119,9 @@ class BibliotecaApp:
 
         self.historial_conversacion = []
         self._placeholder = "Escribí tu pregunta en lenguaje natural..."
+        self._scroll_canvas_activo = None
 
-        from config import GEMINI_KEY
-        if not GEMINI_KEY:
+        if not config.GEMINI_KEY:
             self.pantalla_error_config()
         else:
             self.pantalla_login()
@@ -362,10 +385,7 @@ class BibliotecaApp:
 
     def reintentar_config(self):
         """Recarga variables de entorno y reintenta arrancar la app."""
-        from dotenv import load_dotenv
         load_dotenv(override=True)
-        import config
-        import os
         config.GEMINI_KEY = os.getenv("GEMINI_API_KEY")
         if config.GEMINI_KEY:
             self.pantalla_login()
@@ -462,7 +482,6 @@ class BibliotecaApp:
             canvas.configure(scrollregion=canvas.bbox("all"))
         form_panel.bind("<Configure>", _on_frame_configure)
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(frame_id, width=e.width))
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
         tk.Label(
             form_panel,
@@ -549,101 +568,257 @@ class BibliotecaApp:
             cursor="hand2",
         ).pack(anchor="w", pady=(8, 0))
 
+        self._configurar_scroll_localizado(canvas, form_panel)
         self.ent_reg_nombre.focus_set()
 
     def ejecutar_registro(self):
         """Valida campos y registra un nuevo usuario en la BD."""
-        nombre    = self.ent_reg_nombre.get().strip()
-        apellido  = self.ent_reg_apellido.get().strip()
-        correo    = self.ent_reg_correo.get().strip()
-        telefono  = self.ent_reg_telefono.get().strip()
-        password  = self.ent_reg_password.get()
-        confirmar = self.ent_reg_confirmar.get()
-
-        if not all([nombre, apellido, correo, telefono, password, confirmar]):
-            messagebox.showwarning("Datos incompletos", "Todos los campos son obligatorios.")
-            return
-        if "@" not in correo or "." not in correo.split("@")[-1]:
-            messagebox.showwarning("Correo invalido", "El correo ingresado no es valido.")
-            return
-        if len(telefono) < 8:
-            messagebox.showwarning("Telefono invalido", "El telefono debe tener al menos 8 caracteres.")
-            return
-        if len(password) < 6:
-            messagebox.showwarning("Contrasena corta", "La contrasena debe tener al menos 6 caracteres.")
-            return
-        if password != confirmar:
-            messagebox.showwarning("Contrasenas distintas", "Las contrasenas no coinciden.")
+        datos = self._leer_datos_registro_formulario()
+        validacion = self.registro_service.validar(
+            datos,
+            confirmar=self.ent_reg_confirmar.get() if self.ent_reg_confirmar else "",
+        )
+        if validacion:
+            titulo, mensaje = validacion
+            messagebox.showwarning(titulo, mensaje)
             return
 
         try:
-            import bcrypt
-            from config import SQL_LOGIN_OPERATIVO, SQL_PASS_OPERATIVO
-
-            pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
+            payload = self.registro_service.construir_payload(datos)
             db_reg = DatabaseManager(uid=SQL_LOGIN_OPERATIVO, pwd=SQL_PASS_OPERATIVO)
-            resultado = db_reg.ejecutar_consulta(
-                "EXEC personas.registrar_usuario @nombre=?, @apellido=?, @correo=?, @telefono=?, @password_hash=?, @rol=?",
-                (nombre, apellido, correo, telefono, pw_hash, "usuario"),
-            )
+            resultado = self.registro_service.ejecutar_registro(db_reg, payload)
             if resultado is None:
                 messagebox.showerror("Error", "No se pudo registrar el usuario. Es posible que el correo ya este en uso.")
             else:
-                messagebox.showinfo("Registro exitoso", f"Usuario {nombre} registrado correctamente. Ya puedes iniciar sesion.")
+                messagebox.showinfo(
+                    "Registro exitoso",
+                    f"Usuario {payload.nombre} registrado correctamente. Ya puedes iniciar sesion.",
+                )
                 self.pantalla_login()
         except Exception as e:
             messagebox.showerror("Error inesperado", str(e))
 
-    def pantalla_asistente(self):
-        """Ventana principal del chat con panel SQL lateral."""
-        self.limpiar_pantalla()
-        usuario = self.seguridad.usuario_actual or {}  # type: ignore[union-attr]
-        rol = str(usuario.get("rol") or "sin rol").upper()
+    def _activar_scroll_canvas(self, canvas):
+        self._scroll_canvas_activo = canvas
+        if canvas.winfo_exists():
+            canvas.focus_set()
 
+    def _desactivar_scroll_canvas(self, _event=None):
+        self._scroll_canvas_activo = None
+
+    def _configurar_scroll_localizado(self, canvas, root_widget):
+        def _bind_widget(widget):
+            widget.bind("<Enter>", lambda _e, c=canvas: self._activar_scroll_canvas(c), add="+")
+            widget.bind("<Leave>", self._desactivar_scroll_canvas, add="+")
+            widget.bind("<MouseWheel>", self._on_mousewheel_canvas, add="+")
+            for child in widget.winfo_children():
+                _bind_widget(child)
+
+        _bind_widget(canvas)
+        _bind_widget(root_widget)
+        canvas.bind("<Destroy>", self._desactivar_scroll_canvas, add="+")
+
+    def _on_mousewheel_canvas(self, event):
+        canvas = self._scroll_canvas_activo
+        if canvas is None or not canvas.winfo_exists():
+            self._desactivar_scroll_canvas()
+            return
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _leer_datos_registro_formulario(self):
+        return RegistroUsuarioData(
+            nombre=self.ent_reg_nombre.get().strip() if self.ent_reg_nombre else "",
+            apellido=self.ent_reg_apellido.get().strip() if self.ent_reg_apellido else "",
+            correo=self.ent_reg_correo.get().strip() if self.ent_reg_correo else "",
+            telefono=self.ent_reg_telefono.get().strip() if self.ent_reg_telefono else "",
+            password=self.ent_reg_password.get() if self.ent_reg_password else "",
+            rol="usuario",
+        )
+
+    def pantalla_asistente(self):
+        """
+        Ventana principal con barra de navegacion y paneles intercambiables.
+
+        Construye:
+        1. Cabecera global (titulo, chip de rol, indicador de estado).
+        2. Barra de navegacion con pestanas: Chat, Dashboard, Busqueda,
+           Ayuda y Admin (solo si rol=admin).
+        3. Contenedor de paneles donde cada pestana muestra su Frame.
+        4. El panel Chat (con el PanedWindow existente) se construye aqui;
+           los demas se crean al primera vez que el usuario los activa (lazy).
+        """
+        self.limpiar_pantalla()
+        self._paneles = {}
+        self._nav_botones = {}
+
+        usuario = self.seguridad.usuario_actual or {}  # type: ignore[union-attr]
+        rol_upper = str(usuario.get("rol") or "sin rol").upper()
+        rol = str(usuario.get("rol") or "usuario")
+
+        # --- Cabecera global ---
         top = tk.Frame(self.root, bg=self.theme["panel"], padx=20, pady=14)
         top.pack(fill=tk.X)
 
         tk.Label(
-            top,
-            text="📚",
-            bg=self.theme["panel"],
-            fg=self.theme["accent"],
+            top, text="📚",
+            bg=self.theme["panel"], fg=self.theme["accent"],
             font=(self.fonts["body"], 20),
         ).pack(side=tk.LEFT, padx=(0, 10))
 
         tk.Label(
-            top,
-            text="Asistente de Biblioteca",
-            bg=self.theme["panel"],
-            fg=self.theme["text"],
+            top, text="Asistente de Biblioteca",
+            bg=self.theme["panel"], fg=self.theme["text"],
             font=(self.fonts["title"], 16, "bold"),
         ).pack(side=tk.LEFT)
 
-        chip = tk.Label(
-            top,
-            text=f"ROL: {rol}",
-            bg="#0f766e",
-            fg="#ecfeff",
-            padx=10,
-            pady=4,
+        tk.Label(
+            top, text=f"ROL: {rol_upper}",
+            bg="#0f766e", fg="#ecfeff",
+            padx=10, pady=4,
             font=(self.fonts["body"], 9, "bold"),
-        )
-        chip.pack(side=tk.RIGHT, padx=(8, 0))
+        ).pack(side=tk.RIGHT, padx=(8, 0))
 
         self.lbl_estado = tk.Label(
-            top,
-            text="Listo para ayudarte",
-            bg=self.theme["panel"],
-            fg=self.theme["ok"],
+            top, text="Listo para ayudarte",
+            bg=self.theme["panel"], fg=self.theme["ok"],
             font=(self.fonts["body"], 9),
         )
         self.lbl_estado.pack(side=tk.RIGHT)
 
-        separador_top = tk.Frame(self.root, bg=self.theme["accent"], height=2)
-        separador_top.pack(fill=tk.X)
+        # --- Separador de acento ---
+        tk.Frame(self.root, bg=self.theme["accent"], height=2).pack(fill=tk.X)
+
+        # --- Barra de navegacion ---
+        nav_bar = tk.Frame(
+            self.root, bg=self.theme["panel_soft"], padx=14, pady=5)
+        nav_bar.pack(fill=tk.X)
+        self._construir_nav_barra(nav_bar, rol)
+
+        # --- Contenedor de paneles (fill restante) ---
+        self._contenido = tk.Frame(self.root, bg=self.theme["bg"])
+        self._contenido.pack(fill=tk.BOTH, expand=True)
+
+        # --- Construir el panel de chat (contiene el PanedWindow existente) ---
+        self._construir_panel_chat(self._contenido, rol)
+
+        # --- Mostrar chat por defecto ---
+        self._mostrar_panel_activo("chat")
+        self._mostrar_bienvenida()
+        if self.ent_pregunta:
+            self.ent_pregunta.focus_set()
+
+    # ------------------------------------------------------------------
+    # Navegacion entre paneles
+    # ------------------------------------------------------------------
+
+    def _construir_nav_barra(self, nav_frame: tk.Frame, rol: str) -> None:
+        """
+        Crea los botones de navegacion segun el rol del usuario.
+
+        El panel Admin solo aparece para rol 'admin'. El resto de pestanas
+        son visibles para todos los roles.
+
+        Args:
+            nav_frame: Frame padre donde se empaquetan los botones.
+            rol:       Rol del usuario autenticado ('admin', 'operativo', 'usuario').
+        """
+        tabs = [
+            ("chat",      "💬 Chat"),
+            ("dashboard", "📊 Dashboard"),
+            ("busqueda",  "🔍 Busqueda"),
+            ("ayuda",     "💡 Ayuda"),
+        ]
+        if rol == "admin":
+            tabs.append(("admin", "⚙ Admin"))
+
+        for key, label in tabs:
+            btn = tk.Button(
+                nav_frame, text=label,
+                command=lambda k=key: self._mostrar_panel_activo(k),
+                bg=self.theme["panel_soft"], fg=self.theme["muted"],
+                activebackground=self.theme["accent"], activeforeground="#042f2e",
+                relief=tk.FLAT, padx=14, pady=6,
+                font=(self.fonts["body"], 9, "bold"),
+                cursor="hand2",
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 2))
+            self._nav_botones[key] = btn
+
+    def _mostrar_panel_activo(self, nombre: str) -> None:
+        """
+        Oculta todos los paneles y muestra el solicitado.
+
+        Si el panel no fue construido aun, lo instancia de forma lazy antes
+        de mostrarlo. Actualiza el estilo de los botones de navegacion.
+
+        Args:
+            nombre: Identificador del panel ('chat', 'dashboard', 'busqueda',
+                    'ayuda', 'admin').
+        """
+        # Ocultar todos los paneles activos
+        for panel in self._paneles.values():
+            panel.pack_forget()
+
+        # Construir el panel si aun no existe (lazy instantiation)
+        if nombre not in self._paneles and self._contenido:
+            if nombre == "dashboard":
+                p = DashboardPanel(
+                    self._contenido, self.theme, self.fonts, self.db, self.seguridad)
+            elif nombre == "busqueda":
+                p = BusquedaPanel(
+                    self._contenido, self.theme, self.fonts, self.db, self.seguridad,
+                    on_usar_en_chat=self._usar_consulta_rapida)
+            elif nombre == "ayuda":
+                p = AyudaPanel(
+                    self._contenido, self.theme, self.fonts, self.db, self.seguridad,
+                    on_enviar_al_chat=self._usar_consulta_rapida_desde_ayuda)
+            elif nombre == "admin":
+                p = AdminPanel(
+                    self._contenido, self.theme, self.fonts, self.db, self.seguridad)
+            else:
+                return
+            self._paneles[nombre] = p
+
+        # Mostrar el panel solicitado
+        if nombre in self._paneles:
+            self._paneles[nombre].pack(fill=tk.BOTH, expand=True)
+
+        # Actualizar estilo de los botones de navegacion
+        for key, btn in self._nav_botones.items():
+            if key == nombre:
+                btn.config(bg=self.theme["accent"], fg="#042f2e")
+            else:
+                btn.config(bg=self.theme["panel_soft"], fg=self.theme["muted"])
+
+    def _usar_consulta_rapida_desde_ayuda(self, consulta: str) -> None:
+        """
+        Recibe un ejemplo de la pantalla de Ayuda, lo coloca en el input del chat
+        y activa la pestana de chat automaticamente.
+        """
+        self._mostrar_panel_activo("chat")
+        self._usar_consulta_rapida(consulta)
+
+    # ------------------------------------------------------------------
+    # Panel de chat (extraido de pantalla_asistente para claridad)
+    # ------------------------------------------------------------------
+
+    def _construir_panel_chat(self, parent: tk.Widget, rol: str) -> None:
+        """
+        Construye el panel de chat con el PanedWindow izquierdo/derecho.
+
+        Contiene exactamente el mismo contenido que el antiguo metodo
+        pantalla_asistente, ahora empaquetado en un Frame independiente
+        para que pueda convivir con los demas paneles de la barra de navegacion.
+
+        Args:
+            parent: Frame contenedor donde se empaquetara el panel.
+            rol:    Rol del usuario para definir los botones de consulta rapida.
+        """
+        panel = tk.Frame(parent, bg=self.theme["bg"])
+        self._paneles["chat"] = panel
 
         paned = tk.PanedWindow(
-            self.root,
+            panel,
             orient=tk.HORIZONTAL,
             bg=self.theme["bg"],
             sashwidth=5,
@@ -674,7 +849,6 @@ class BibliotecaApp:
         tools = tk.Frame(left, bg=self.theme["bg"], pady=10)
         tools.pack(fill=tk.X)
 
-        rol = (self.seguridad.usuario_actual if self.seguridad else {}).get("rol", "usuario")  # type: ignore[union-attr]
         if rol == "admin":
             consulta_rapida = [
                 "Cuántos libros hay registrados?",
@@ -696,6 +870,7 @@ class BibliotecaApp:
                 "Lista de autores",
                 "Libros disponibles",
             ]
+
         self.botones_rapidos = []
         for texto in consulta_rapida:
             boton = tk.Button(
@@ -721,8 +896,8 @@ class BibliotecaApp:
         input_box = tk.Frame(
             composer,
             bg=self.theme["input_bg"],
-            highlightthickness=1,
-            highlightbackground=self.theme["border"],
+            highlightthickness=2,
+            highlightbackground=self.theme["accent"],
             padx=6,
         )
         input_box.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -737,10 +912,10 @@ class BibliotecaApp:
             font=(self.fonts["body"], 11),
         )
         self.ent_pregunta.pack(fill=tk.X, padx=10, ipady=12)
-        self.ent_pregunta.insert(0, self._placeholder)
         self.ent_pregunta.bind("<Return>", lambda _e: self.procesar_consulta())
         self.ent_pregunta.bind("<FocusIn>", self._on_entry_focus_in)
         self.ent_pregunta.bind("<FocusOut>", self._on_entry_focus_out)
+        self._activar_placeholder_pregunta()
 
         self.btn_enviar = tk.Button(
             composer,
@@ -795,7 +970,7 @@ class BibliotecaApp:
         )
         self.txt_sql.pack(fill=tk.BOTH, expand=True, pady=(6, 8))
         self.txt_sql.config(state="normal")
-        self.txt_sql.insert(tk.END, "— Aquí aparecerá el SQL generado por la IA —")
+        self.txt_sql.insert(tk.END, "-- Aquí aparecerá el SQL generado por la IA.\n-- Cada consulta reemplaza este contenido.")
         self.txt_sql.config(state="disabled")
 
         tk.Frame(right, bg=self.theme["border"], height=1).pack(fill=tk.X, pady=(0, 6))
@@ -820,14 +995,11 @@ class BibliotecaApp:
         )
         self.lbl_sql_estado.pack(fill=tk.X)
 
-        # Ajustar proporción 65/35 tras renderizar
+        # Ajustar proporcion 65/35 tras renderizar
         self.root.update_idletasks()
         total = paned.winfo_width()
         if total > 10:
             paned.sash_place(0, int(total * 0.65), 0)
-
-        self._mostrar_bienvenida()
-        self.ent_pregunta.focus_set()
 
     def mostrar_sql(self, sql: str, modelo: str, estado: str = ""):
         """Actualiza el panel lateral con el SQL generado y el estado de la ejecucion."""
@@ -902,17 +1074,28 @@ class BibliotecaApp:
     def _mostrar_bienvenida(self):
         usuario = self.seguridad.usuario_actual or {}
         nombre = str(usuario.get("nombre") or "usuario")
-        permisos = self.seguridad.describir_permisos()
+        rol = str(usuario.get("rol") or "usuario")
+        _desc = {
+            "admin":     "Acceso total: catálogo, préstamos, usuarios y auditoría.",
+            "operativo": "Gestión de préstamos y consultas avanzadas.",
+            "usuario":   "Consultas de catálogo y disponibilidad.",
+        }
+        desc = _desc.get(rol, self.seguridad.describir_permisos())
         mensaje = (
-            f"Bienvenido/a {nombre}. Soy tu bibliotecario virtual.\n"
-            f"{permisos}\n"
-            f"Podés preguntarme en lenguaje natural. Ejemplos: "
-            f"'cuántos libros hay', 'registrar un nuevo libro', "
-            f"'préstamos vencidos', 'devolver el libro X'."
+            f"¡Hola, {nombre}!  Rol: {rol.upper()}\n"
+            f"{desc}\n\n"
+            f"Ejemplos de consultas:\n"
+            f"  • ¿Cuántos libros hay registrados?\n"
+            f"  • Préstamos vencidos\n"
+            f"  • Libros disponibles de tecnología\n"
+            f"  • Registrar devolución del libro X"
         )
         self.mostrar_en_chat(mensaje, autor="Sistema")
 
     def _usar_consulta_rapida(self, consulta):
+        if not self.ent_pregunta:
+            return
+        self._desactivar_placeholder_pregunta()
         self.ent_pregunta.delete(0, tk.END)
         self.ent_pregunta.insert(0, consulta)
         self.procesar_consulta()
@@ -930,75 +1113,36 @@ class BibliotecaApp:
         for boton in self.botones_rapidos:
             boton.config(state=estado)
 
-    @staticmethod
-    def _normalizar_sql(sql_generado):
-        """
-        Limpia el texto retornado por Gemini y extrae el SQL ejecutable.
+    def _activar_placeholder_pregunta(self):
+        if not self.ent_pregunta:
+            return
+        self.ent_pregunta.delete(0, tk.END)
+        self.ent_pregunta.insert(0, self._placeholder)
+        self.ent_pregunta.config(fg=self.theme["muted"])
 
-        Transformaciones aplicadas (en orden):
-        1. Extrae contenido de bloques ```sql ... ```.
-        2. Elimina el prefijo 'SQL:'.
-        3. Convierte identificadores con backticks a corchetes [nombre],
-           o los elimina si son palabras clave SQL.
-        4. Reemplaza backticks restantes por comillas simples.
-        5. Recorta el texto desde la primera palabra clave valida
-           (SELECT, EXEC o WITH).
-
-        Args:
-            sql_generado (str): Texto crudo retornado por la IA.
-
-        Returns:
-            str: Sentencia T-SQL lista para ejecutar, o cadena vacia si
-                 no se encontro SQL valido.
-        """
-        sql = str(sql_generado or "").strip()
-        if not sql:
-            return ""
-
-        bloque = re.search(r"```(?:sql)?\s*(.*?)```", sql, flags=re.IGNORECASE | re.DOTALL)
-        if bloque:
-            sql = bloque.group(1).strip()
-
-        if sql.upper().startswith("SQL:"):
-            sql = sql[4:].strip()
-
-        sql_keywords = {
-            "SELECT", "FROM", "WHERE", "EXEC", "WITH", "ORDER", "BY", "GROUP",
-            "HAVING", "TOP", "AS", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER",
-            "ON", "AND", "OR", "INSERT", "UPDATE", "DELETE", "INTO", "VALUES",
-        }
-
-        def _replace_backtick_identifier(match):
-            token = match.group(1)
-            if token.upper() in sql_keywords:
-                return token
-            return f"[{token}]"
-
-        sql = re.sub(r"`([A-Za-z_][A-Za-z0-9_]*)`", _replace_backtick_identifier, sql)
-        if "`" in sql:
-            sql = sql.replace("`", "'")
-
-        sql_upper = sql.upper()
-        posiciones = [sql_upper.find(k) for k in ("SELECT", "EXEC", "WITH")]
-        posiciones_validas = [p for p in posiciones if p >= 0]
-        if posiciones_validas:
-            sql = sql[min(posiciones_validas):].strip()
-
-        return sql
+    def _desactivar_placeholder_pregunta(self):
+        if not self.ent_pregunta:
+            return
+        if self.ent_pregunta.get() == self._placeholder:
+            self.ent_pregunta.delete(0, tk.END)
+        self.ent_pregunta.config(fg=self.theme["text"])
 
     def _on_entry_focus_in(self, _event):
-        if self.ent_pregunta and self.ent_pregunta.get() == self._placeholder:
-            self.ent_pregunta.delete(0, tk.END)
-            self.ent_pregunta.config(fg=self.theme["text"])
+        self._desactivar_placeholder_pregunta()
 
     def _on_entry_focus_out(self, _event):
         if self.ent_pregunta and not self.ent_pregunta.get().strip():
-            self.ent_pregunta.insert(0, self._placeholder)
-            self.ent_pregunta.config(fg=self.theme["muted"])
+            self._activar_placeholder_pregunta()
 
-    def procesar_consulta(self):
+    def _validar_entrada_usuario(self):
         pregunta = self.ent_pregunta.get().strip() if self.ent_pregunta else ""
         if not pregunta or pregunta == self._placeholder:
+            return None
+        return pregunta
+
+    def procesar_consulta(self):
+        pregunta = self._validar_entrada_usuario()
+        if pregunta is None:
             return
 
         self.mostrar_en_chat(pregunta, autor="Tu")
@@ -1007,123 +1151,126 @@ class BibliotecaApp:
         self._set_estado("Consultando...", self.theme["warn"])
 
         threading.Thread(
-            target=self._procesar_en_hilo,
+            target=self._procesar_consulta_async,
             args=(pregunta,),
             daemon=True,
         ).start()
 
-    def _procesar_en_hilo(self, pregunta):
-        """Ejecuta el flujo NL->SQL->DB en un hilo secundario para no congelar la GUI."""
+    def _agregar_historial(self, rol, texto):
+        self.historial_conversacion.append({"rol": rol, "texto": texto})
+        if len(self.historial_conversacion) > 10:
+            self.historial_conversacion = self.historial_conversacion[-10:]
 
-        def ui(fn, *args):
-            self.root.after(0, fn, *args)
+    def _crear_chat_controller(self):
+        return ChatController(
+            asistente=self.asistente,
+            db=self.db,
+            seguridad=self.seguridad,
+            consulta_service=self.consulta_service,
+        )
 
-        if self.asistente is None or self.db is None:
-            ui(self.mostrar_en_chat, "Sesion no inicializada correctamente.", "Sistema")
-            return
+    def _aplicar_historial_resultado(self, resultado: ResultadoConsulta):
+        for entrada in resultado.historial:
+            self._agregar_historial(entrada.rol, entrada.texto)
 
+    def _aplicar_resultado_consulta(self, resultado: ResultadoConsulta):
         try:
-            with self._ai_lock:
-                blocked_until = self.ai_blocked_until
-            ahora = time.time()
-            if ahora < blocked_until:
-                segundos = int(blocked_until - ahora) + 1
-                ui(self.mostrar_en_chat,
-                   f"La IA esta temporalmente sin cuota. Intenta de nuevo en {segundos} segundos.",
-                   "Sistema")
-                return
-
-            try:
-                sql_raw = self.asistente.interpretar_pregunta(pregunta, self.historial_conversacion)
-            except AIQuotaExceededError as exc:
-                retry_after = exc.retry_after_seconds or 30
+            if resultado.ai_blocked_until is not None:
                 with self._ai_lock:
-                    self.ai_blocked_until = time.time() + retry_after
-                ui(self.mostrar_en_chat, str(exc), "Sistema")
-                return
-            except AIServiceError as exc:
-                ui(self.mostrar_en_chat, f"Error de IA: {exc}", "Sistema")
-                return
+                    self.ai_blocked_until = resultado.ai_blocked_until
 
-            modelo = self.asistente.model_name
+            self._aplicar_historial_resultado(resultado)
 
-            # Respuesta conversacional: la IA pide mas datos al usuario.
-            if sql_raw.upper().startswith("PEDIR:"):
-                pregunta_ia = sql_raw[6:].strip()
-                self.historial_conversacion.append({"rol": "usuario", "texto": pregunta})
-                self.historial_conversacion.append({"rol": "asistente", "texto": f"PEDIR: {pregunta_ia}"})
-                ui(self.mostrar_sql, f"[Recopilando informacion]\n{pregunta_ia}", modelo, "Recopilando informacion")
-                ui(self.mostrar_en_chat, pregunta_ia, "Asistente")
-                return
+            if resultado.sql is not None:
+                self.mostrar_sql(
+                    resultado.sql,
+                    resultado.modelo or "-",
+                    resultado.estado_sql or "",
+                )
 
-            # Respuesta conversacional: la IA da una instruccion o explicacion sin SQL.
-            if sql_raw.upper().startswith("INSTRUCCION:"):
-                mensaje_ia = sql_raw[12:].strip()
-                self.historial_conversacion.append({"rol": "usuario", "texto": pregunta})
-                self.historial_conversacion.append({"rol": "asistente", "texto": f"INSTRUCCION: {mensaje_ia}"})
-                ui(self.mostrar_sql, f"[Instruccion al usuario]\n{mensaje_ia}", modelo, "Instruccion al usuario")
-                ui(self.mostrar_en_chat, mensaje_ia, "Asistente")
-                return
-
-            # Registro con contrasena: la IA devuelve el EXEC con password en texto plano.
-            pending_hash = False
-            if sql_raw.upper().startswith("PENDING_HASH:"):
-                pending_hash = True
-                sql_raw = sql_raw[13:].strip()
-
-            sql = self._normalizar_sql(sql_raw)
-
-            # Sustituir contrasena en texto plano por hash bcrypt antes de ejecutar.
-            if pending_hash and sql:
-                match_pw = re.search(r"@password_hash\s*=\s*'([^']*)'", sql, re.IGNORECASE)
-                if match_pw:
-                    import bcrypt as _bcrypt
-                    raw_password = match_pw.group(1)
-                    pw_hash = _bcrypt.hashpw(raw_password.encode(), _bcrypt.gensalt(rounds=12)).decode()
-                    sql = sql[:match_pw.start(1)] + pw_hash + sql[match_pw.end(1):]
-
-            if not sql:
-                ui(self.mostrar_sql, "(no se genero SQL valido)", modelo, "")
-                ui(self.mostrar_en_chat, "No se pudo generar una consulta valida.", "Sistema")
-                return
-
-            if "?" in sql:
-                ui(self.mostrar_sql, sql, modelo, "Pendiente de validacion")
-                ui(self.mostrar_en_chat,
-                   "La consulta generada quedo incompleta (placeholder '?'). Intenta reformular.",
-                   "Sistema")
-                return
-
-            ui(self.mostrar_sql, sql, modelo, "Pendiente de validacion")
-
-            if not self.seguridad.validar_accion(sql):  # type: ignore[union-attr]
-                ui(self.mostrar_sql, sql, modelo, "⚠ Bloqueado por permisos de rol")
-                ui(self.mostrar_en_chat,
-                   f"No puedo ejecutar esa accion con tu rol actual. {self.seguridad.describir_permisos()}",  # type: ignore[union-attr]
-                   "Sistema")
-                return
-
-            # Limitar resultados en SELECT sin TOP para evitar traer toda la tabla.
-            if re.match(r"^\s*SELECT\s+(?!TOP\s)", sql, re.IGNORECASE):
-                sql = re.sub(r"(?i)^(\s*SELECT\s+)", r"\1TOP 100 ", sql, count=1)
-
-            datos_crudos = self.db.ejecutar_consulta(sql)
-            if datos_crudos is None:
-                ui(self.mostrar_sql, sql, modelo, "✗ Error en base de datos")
-                ui(self.mostrar_en_chat, "Ocurrio un error al consultar la base de datos.", "Sistema")
-                return
-
-            ui(self.mostrar_sql, sql, modelo, "✓ Ejecutado correctamente")
-            respuesta_final = self.asistente.formatear_respuesta_humana(pregunta, datos_crudos)
-            ui(self.mostrar_en_chat, respuesta_final, "Asistente")
-
-            # Actualizar historial conversacional (ultimas 10 entradas).
-            self.historial_conversacion.append({"rol": "usuario", "texto": pregunta})
-            self.historial_conversacion.append({"rol": "asistente", "texto": sql})
-            if len(self.historial_conversacion) > 10:
-                self.historial_conversacion = self.historial_conversacion[-10:]
+            for mensaje in resultado.mensajes:
+                self.mostrar_en_chat(mensaje.texto, mensaje.autor)
+        except Exception:
+            # Widgets destruidos por cambio de pantalla antes de aplicar el resultado.
+            pass
         finally:
-            ui(self._finalizar_consulta)
+            self._finalizar_consulta()
+
+    def _procesar_consulta_async(self, pregunta: str) -> None:
+        """
+        Ejecuta el controller en un hilo secundario y delega el render a Tkinter.
+
+        Los detalles tecnicos del error se registran en el logger; el usuario
+        ve solo un mensaje amigable que no expone detalles internos.
+        """
+        with self._ai_lock:
+            blocked_until = self.ai_blocked_until
+
+        controller = self._crear_chat_controller()
+        try:
+            resultado = controller.procesar_consulta(
+                pregunta=pregunta,
+                historial_conversacion=list(self.historial_conversacion),
+                ai_blocked_until=blocked_until,
+            )
+        except Exception as exc:
+            # Loguear el error tecnico sin mostrarlo al usuario
+            logger.error("Error inesperado en procesar_consulta_async: %s", exc)
+            resultado = ResultadoConsulta(
+                mensajes=(MensajeChat(MENSAJES["error_inesperado"], "Sistema"),),
+            )
+
+        # Registrar la consulta en la tabla de auditoria (no bloqueante)
+        self._registrar_auditoria(pregunta, resultado)
+
+        self.root.after(0, self._aplicar_resultado_consulta, resultado)
+
+    def _registrar_auditoria(self, pregunta: str, resultado: ResultadoConsulta) -> None:
+        """
+        Inserta un registro en auditoria.consultas de forma asincrona.
+
+        Si la tabla no existe (database_patch.sql no ejecutado), el error
+        se captura silenciosamente sin afectar la experiencia del usuario.
+
+        Args:
+            pregunta:  Texto original del usuario.
+            resultado: ResultadoConsulta con sql, estado y posible bloqueo.
+        """
+        usuario = (self.seguridad.usuario_actual or {}) if self.seguridad else {}
+        id_usuario = usuario.get("id")
+        nombre = f"{usuario.get('nombre', '')} {usuario.get('apellido', '')}".strip()
+
+        # Determinar estado legible para la auditoria
+        estado_sql = resultado.estado_sql or ""
+        if "correctamente" in estado_sql.lower():
+            estado = "ejecutado"
+        elif "bloqueado" in estado_sql.lower():
+            estado = "bloqueado"
+        elif resultado.ai_blocked_until:
+            estado = "cuota_ia"
+        elif resultado.sql is None and resultado.historial:
+            estado = "conversacional"
+        else:
+            estado = "error"
+
+        sql_log = resultado.sql or ""
+
+        def _insert() -> None:
+            if self.db is None:
+                return
+            try:
+                self.db.ejecutar_consulta(
+                    "INSERT INTO auditoria.consultas "
+                    "(id_usuario, nombre_usuario, pregunta, sql_generado, resultado) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (id_usuario, nombre or "desconocido",
+                     pregunta[:4000], sql_log[:4000], estado),
+                )
+            except Exception:
+                # La tabla de auditoria es opcional; no propagar el error
+                pass
+
+        threading.Thread(target=_insert, daemon=True).start()
 
     def _finalizar_consulta(self):
         """Restaura el estado de la UI tras completar una consulta (siempre en hilo principal)."""
@@ -1180,6 +1327,7 @@ class BibliotecaApp:
 
     def limpiar_pantalla(self):
         self.historial_conversacion = []
+        self._desactivar_scroll_canvas()
         for widget in self.root.winfo_children():
             widget.destroy()
 

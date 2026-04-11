@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Modulo: database_manager.py
 Descripcion: Capa de persistencia. Gestiona la conexion a SQL Server y la
@@ -111,6 +112,11 @@ class DatabaseManager:
 
         try:
             with pyodbc.connect(self.conn_str, timeout=5) as conn:
+                # Decodificar VARCHAR con cp1252 (Latin-1) y NVARCHAR con UTF-8
+                # para que tildes y ñ se lean correctamente desde SQL Server.
+                conn.setdecoding(pyodbc.SQL_CHAR, encoding='cp1252')
+                conn.setdecoding(pyodbc.SQL_WCHAR, encoding='utf-8')
+                conn.setencoding(encoding='utf-8')
                 cursor = conn.cursor()
                 if params:
                     cursor.execute(sql, *params)

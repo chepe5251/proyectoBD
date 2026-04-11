@@ -15,20 +15,27 @@ El sistema sigue una arquitectura de capas con separacion clara de responsabilid
 │  Capa de Presentacion  —  main.py                    │
 │  GUI Tkinter. Orquesta el flujo completo.            │
 └────────────────────────┬─────────────────────────────┘
-                         │
-         ┌───────────────┼───────────────┐
-         ▼               ▼               ▼
-┌────────────────┐ ┌──────────────┐ ┌────────────────┐
-│ Capa de        │ │ Capa de IA   │ │ Capa de Datos  │
-│ Seguridad      │ │ ai_assistant │ │ database_mgr   │
-│ seguridad.py   │ │              │ │                │
-│                │ │ Google       │ │ PyODBC         │
-│ Autenticacion  │ │ Gemini API   │ │ SQL Server     │
-│ RBAC           │ │ NL -> T-SQL  │ │ biblioteca     │
-└────────────────┘ └──────────────┘ └────────────────┘
-         │                                   │
-         └──────────── config.py ────────────┘
-                  Carga de .env
+                         │ delega
+                         ▼
+              ┌──────────────────────────────┐
+              │ Servicios de Aplicacion      │
+              │ app_services.py              │
+              │ Registro + preparacion SQL   │
+              └───────────────┬──────────────┘
+                              │
+         ┌────────────────────┼────────────────────┐
+         ▼                    ▼                    ▼
+┌────────────────┐  ┌──────────────┐   ┌────────────────┐
+│ Capa de        │  │ Capa de IA   │   │ Capa de Datos  │
+│ Seguridad      │  │ ai_assistant │   │ database_mgr   │
+│ seguridad.py   │  │              │   │                │
+│                │  │ Google       │   │ PyODBC         │
+│ Autenticacion  │  │ Gemini API   │   │ SQL Server     │
+│ RBAC           │  │ NL -> T-SQL  │   │ biblioteca     │
+└────────────────┘  └──────────────┘   └────────────────┘
+         │                                      │
+         └────────────── config.py ─────────────┘
+                    Carga de .env
 ```
 
 ---
@@ -120,17 +127,45 @@ Responsabilidades:
 - Renderizar pantallas de login, registro y chat con Tkinter (tema oscuro, teal accent).
 - Orquestar el flujo completo: login → NL → validacion prefijo IA → normalizacion SQL →
   RBAC → ejecucion → formateo → display.
+- Compartir la misma validacion de registro, hashing bcrypt y construccion del `EXEC personas.registrar_usuario`
+  entre el formulario de alta y el flujo conversacional `PENDING_HASH:`.
 - Mantener el historial conversacional (`self.historial_conversacion`, max 10 entradas) y
   pasarlo a `interpretar_pregunta` en cada consulta.
 - Interceptar respuestas especiales de la IA antes de normalizar el SQL:
   - `PEDIR:` → muestra pregunta en el chat, actualiza historial, espera siguiente turno.
   - `INSTRUCCION:` → muestra mensaje en el chat, actualiza historial.
-  - `PENDING_HASH:` → extrae la contrasena en texto plano del EXEC, genera hash bcrypt y
-    sustituye en el SQL antes de enviarlo a la base de datos.
-- Ejecutar el flujo NL->SQL->DB en un hilo secundario (`threading.Thread`) para evitar el bloqueo de la UI.
+  - `PENDING_HASH:` → detecta registros de usuario, genera hash bcrypt y reutiliza la misma
+    construccion parametrizada del alta; en otros casos sustituye el `@password_hash` antes de ejecutar.
+- Ejecutar el flujo NL->SQL->DB en un hilo secundario (`threading.Thread`) delegando cuota,
+  IA, comandos especiales, preparacion SQL, validacion, ejecucion y respuesta a helpers privados.
 - Normalizar el SQL generado por la IA (eliminar markdown, backticks, prefijos textuales).
 - Gestionar el estado de la UI durante el procesamiento (bloqueo de inputs, indicador de estado).
 - Mostrar mensajes en el chat con estilo de burbuja segun el autor (usuario, asistente, sistema).
+
+---
+
+### 6. Servicios de Aplicacion — `app_services.py`
+
+Responsabilidades:
+- Centralizar la validacion, hashing bcrypt y construccion del `EXEC personas.registrar_usuario`.
+- Reutilizar la misma logica de registro desde el formulario GUI y desde `PENDING_HASH:`.
+- Normalizar la respuesta SQL de la IA, ocultar `@password_hash` en el SQL visible y construir consultas preparadas.
+- Aplicar `TOP 100` sobre `SELECT` sin limite como paso reutilizable y testeable fuera de Tkinter.
+
+Esto reduce el acoplamiento de `main.py` con reglas de negocio y deja a la GUI como orquestadora.
+
+---
+
+### Controller Conversacional — `chat_controller.py`
+
+Responsabilidades:
+- Orquestar el flujo completo NL -> SQL -> validacion -> ejecucion sin depender de Tkinter.
+- Consultar Gemini y traducir errores de cuota o servicio a resultados estructurados.
+- Interpretar prefijos especiales `PEDIR:`, `INSTRUCCION:` y `PENDING_HASH:`.
+- Delegar preparacion SQL a `ConsultaService`, validar RBAC con `SecurityManager` y ejecutar con `DatabaseManager`.
+- Entregar a la GUI un `ResultadoConsulta` con mensajes, SQL visible, estado e historial.
+
+Esta capa reduce el acoplamiento entre `BibliotecaApp` y la logica de negocio del chat.
 
 ---
 
@@ -155,9 +190,9 @@ BibliotecaApp.procesar_consulta()
         │       └─ Mostrar mensaje en chat, actualizar historial → FIN del turno
         │
         ├─ ¿Respuesta es PENDING_HASH:?
-        │       └─ Extraer contrasena en texto plano del EXEC
-        │          Generar hash bcrypt (rounds=12) en Python
-        │          Sustituir en SQL antes de continuar
+        │       └─ Si es `personas.registrar_usuario`, reutilizar helper de registro
+        │          para validar datos, generar hash bcrypt y construir EXEC parametrizado
+        │          Si no, hashear `@password_hash` antes de continuar
         │
         ├─ BibliotecaApp._normalizar_sql(sql)
         │       └─ Limpia markdown, backticks, prefijo "SQL:"
@@ -212,9 +247,11 @@ la UI de Tkinter. Todas las actualizaciones visuales se despachan al hilo princi
 La lista de candidatos permite que la aplicacion funcione aunque un modelo especifico no este disponible
 para la API key usada, sin requerir intervencion del usuario.
 
-**Normalizacion de SQL en la GUI**
-La limpieza del SQL generado por la IA se centraliza en `_normalizar_sql()` dentro de `BibliotecaApp`.
-Esto mantiene `AIAssistant` desacoplado del formato de respuesta del modelo.
+**Normalizacion de SQL fuera de la GUI**
+La limpieza del SQL generado por la IA se concentra en `ConsultaService`, mientras
+`ChatController` coordina su uso dentro del flujo conversacional.
+Esto mantiene `AIAssistant` desacoplado del formato de respuesta del modelo y a
+`BibliotecaApp` enfocada en la presentacion.
 
 **Doble SDK de Google Gemini**
 Se mantiene soporte para `google-genai` (SDK nuevo, preferido) y `google-generativeai` (SDK legado,
