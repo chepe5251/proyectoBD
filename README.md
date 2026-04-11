@@ -1,6 +1,6 @@
 # Biblioteca Inteligente — Asistente SQL con IA
 
-Aplicacion de escritorio que permite consultar y gestionar una base de datos de biblioteca mediante lenguaje natural. El usuario escribe preguntas en español; Google Gemini las convierte a T-SQL y el sistema las ejecuta sobre SQL Server mostrando los resultados en texto legible.
+Aplicacion de escritorio Windows que permite consultar y gestionar una base de datos de biblioteca mediante lenguaje natural. El usuario escribe preguntas en español; Google Gemini las convierte a T-SQL y el sistema las ejecuta sobre SQL Server mostrando los resultados en texto legible.
 
 ---
 
@@ -9,18 +9,19 @@ Aplicacion de escritorio que permite consultar y gestionar una base de datos de 
 1. [Descripcion general](#1-descripcion-general)
 2. [Arquitectura](#2-arquitectura)
 3. [Controller de consultas](#3-controller-de-consultas)
-4. [Nuevas funcionalidades](#4-nuevas-funcionalidades)
-5. [Estructura del repositorio](#5-estructura-del-repositorio)
-6. [Base de datos](#6-base-de-datos)
-7. [Seguridad y roles](#7-seguridad-y-roles)
-8. [Requisitos previos](#8-requisitos-previos)
-9. [Instalacion](#9-instalacion)
-10. [Configuracion del archivo .env](#10-configuracion-del-archivo-env)
-11. [Crear la base de datos](#11-crear-la-base-de-datos)
-12. [Ejecucion](#12-ejecucion)
-13. [Uso de la aplicacion](#13-uso-de-la-aplicacion)
-14. [Usuarios de prueba](#14-usuarios-de-prueba)
-15. [Manejo de errores](#15-manejo-de-errores)
+4. [Funcionalidades](#4-funcionalidades)
+5. [Interfaz grafica](#5-interfaz-grafica)
+6. [Estructura del repositorio](#6-estructura-del-repositorio)
+7. [Base de datos](#7-base-de-datos)
+8. [Seguridad y roles](#8-seguridad-y-roles)
+9. [Requisitos previos](#9-requisitos-previos)
+10. [Instalacion](#10-instalacion)
+11. [Configuracion del archivo .env](#11-configuracion-del-archivo-env)
+12. [Crear la base de datos](#12-crear-la-base-de-datos)
+13. [Ejecucion](#13-ejecucion)
+14. [Uso de la aplicacion](#14-uso-de-la-aplicacion)
+15. [Usuarios de prueba](#15-usuarios-de-prueba)
+16. [Manejo de errores](#16-manejo-de-errores)
 
 ---
 
@@ -34,8 +35,8 @@ El proyecto implementa un asistente conversacional con las siguientes capacidade
 - **Control de acceso por roles (RBAC)** en dos niveles: permisos del motor SQL Server y capa de validacion en la aplicacion.
 - **Proteccion contra fuerza bruta**: bloqueo automatico de 30 segundos tras 5 intentos fallidos consecutivos por correo.
 - **Panel SQL en tiempo real**: muestra la consulta generada por la IA, el modelo usado, estado de conexion y estado de ejecucion.
-- **Registro de nuevos usuarios** directamente desde la aplicacion o a traves del asistente, compartiendo la misma validacion, hashing bcrypt y construccion del `EXEC`.
-- **Interfaz grafica** oscura con tema teal, burbujas de mensaje por rol, botones de consulta rapida dinamicos segun el rol del usuario y procesamiento en hilo secundario (la ventana nunca se congela).
+- **Registro de nuevos usuarios** directamente desde la aplicacion o a traves del asistente.
+- **Interfaz grafica** Deep Carbon (Windows 11) con sidebar colapsable, iconografia Segoe MDL2 Assets, burbujas de chat por rol y procesamiento en hilo secundario.
 
 ---
 
@@ -44,38 +45,40 @@ El proyecto implementa un asistente conversacional con las siguientes capacidade
 ### Capas del sistema
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  PRESENTACION   main.py  (BibliotecaApp — Tkinter)          │
-│  · Pantalla de login / registro / error config              │
-│  · Chat con burbujas (panel 65%)                            │
-│  · Panel SQL en tiempo real (panel 35%)                     │
-│  · Ejecuta consultas en hilo secundario (nunca congela UI)  │
-└──────────────────────┬──────────────────────────────────────┘
-                       │ pregunta (str) + historial + timestamp cuota
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│  CONTROLLER     chat_controller.py  (ChatController)        │
-│  · Pipeline NL → IA → SQL → validacion → BD → formato      │
-│  · Sin dependencias de Tkinter; testeable de forma aislada  │
-│  · Devuelve ResultadoConsulta (datos puros, sin widgets)    │
-└──────┬──────────────┬─────────────────┬─────────────────────┘
-       │              │                 │
-       ▼              ▼                 ▼
-┌────────────┐  ┌───────────────┐  ┌──────────────────────┐
-│ seguridad  │  │ ai_assistant  │  │  app_services        │
-│ .py        │  │ .py           │  │  .py                 │
-│ Auth bcrypt│  │ Gemini NL→SQL │  │  ConsultaService     │
-│ RBAC capa2 │  │ Formateo resp │  │  RegistroUsuarioSrv  │
-└────────────┘  └───────┬───────┘  └──────────────────────┘
-                        │ Google Gemini API
-                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│  DATOS          database_manager.py  (DatabaseManager)      │
-│  · PyODBC → SQL Server (login por rol)                      │
-│  · Timeout de 5 s, resultados en listas de filas            │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ▼
++-------------------------------------------------------------+
+|  PRESENTACION   main.py + features.py  (CustomTkinter)      |
+|  · Login / Registro / Error config                          |
+|  · Chat con burbujas (scrolledtext conservado — tags color) |
+|  · Panel SQL en tiempo real (scrolledtext conservado)       |
+|  · Dashboard / Busqueda / Ayuda / Admin  (CTk + Treeview)   |
+|  · Sidebar NavigationView colapsable con iconos MDL2        |
+|  · Ejecuta consultas en hilo secundario (nunca congela UI)  |
++----------------------+--------------------------------------+
+                       | pregunta (str) + historial + timestamp cuota
+                       v
++-------------------------------------------------------------+
+|  CONTROLLER     chat_controller.py  (ChatController)        |
+|  · Pipeline NL → IA → SQL → validacion → BD → formato      |
+|  · Sin dependencias de Tkinter; testeable de forma aislada  |
+|  · Devuelve ResultadoConsulta (datos puros, sin widgets)    |
++------+---------------+-----------------+--------------------+
+       |               |                 |
+       v               v                 v
++------------+  +---------------+  +---------------------+
+| seguridad  |  | ai_assistant  |  | app_services        |
+| .py        |  | .py           |  | .py                 |
+| Auth bcrypt|  | Gemini NL→SQL |  | ConsultaService     |
+| RBAC capa2 |  | Formateo resp |  | RegistroUsuarioSrv  |
++------------+  +-------+-------+  +---------------------+
+                        | Google Gemini API
+                        v
++-------------------------------------------------------------+
+|  DATOS          database_manager.py  (DatabaseManager)      |
+|  · PyODBC → SQL Server (login por rol)                      |
+|  · Timeout de 5 s, resultados en listas de filas            |
++----------------------+--------------------------------------+
+                       |
+                       v
                   SQL Server
                   base de datos: biblioteca
 ```
@@ -84,45 +87,42 @@ El proyecto implementa un asistente conversacional con las siguientes capacidade
 
 ```
 Usuario escribe pregunta
-        │
-        ▼
+        |
+        v
 [1] ChatController._verificar_servicios_consulta()
-        │ guardia: asistente, db y seguridad inicializados
-        ▼
+        | guardia: asistente, db y seguridad inicializados
+        v
 [2] ChatController._verificar_cuota_ia()
-        │ si cuota bloqueada (429 previo) → mensaje de espera, fin
-        ▼
+        | si cuota bloqueada (429 previo) → mensaje de espera, fin
+        v
 [3] AIAssistant.interpretar_pregunta(pregunta, historial)
-        │ llama a Google Gemini con los ultimos 10 turnos de contexto
-        │ errores: AIQuotaExceededError (429) → bloqueo, AIServiceError → error
-        ▼
+        | llama a Google Gemini con los ultimos 10 turnos de contexto
+        | errores: AIQuotaExceededError (429) → bloqueo, AIServiceError → error
+        v
 [4] ChatController._interpretar_respuesta_ia()
-        ├── PEDIR:        → el asistente pide mas datos, actualiza historial, fin
-        ├── INSTRUCCION:  → respuesta conversacional sin SQL, actualiza historial, fin
-        ├── PENDING_HASH: → marca pending_hash=True, elimina prefijo, continua
-        └── (SQL normal)  → continua sin cambios
-        ▼
+        +-- PEDIR:        → el asistente pide mas datos, actualiza historial, fin
+        +-- INSTRUCCION:  → respuesta conversacional sin SQL, actualiza historial, fin
+        +-- PENDING_HASH: → marca pending_hash=True, elimina prefijo, continua
+        +-- (SQL normal)  → continua sin cambios
+        v
 [5] ConsultaService.preparar_consulta()
-        │ normaliza: elimina markdown, backticks, prefijo SQL:
-        │ si pending_hash: genera hash bcrypt y construye EXEC parametrizado
-        │ si queda placeholder '?': error con mensaje al usuario
-        ▼
+        | normaliza: elimina markdown, backticks, prefijo SQL:
+        | si pending_hash: genera hash bcrypt y construye EXEC parametrizado
+        v
 [6] SecurityManager.validar_accion()
-        │ RBAC capa 2: verifica que el SQL sea permitido para el rol
-        │ bloquea injection patterns (OR 1=1, --, WAITFOR DELAY, etc.)
-        │ si bloqueado → mensaje con permisos del rol, fin
-        ▼
+        | RBAC capa 2: verifica que el SQL sea permitido para el rol
+        | bloquea injection patterns (OR 1=1, --, WAITFOR DELAY, etc.)
+        v
 [7] ConsultaService.aplicar_limite_sql()
-        │ agrega TOP 100 si es SELECT sin TOP (protege rendimiento)
-        ▼
+        | agrega TOP 100 si es SELECT sin TOP
+        v
 [8] DatabaseManager.ejecutar_consulta()
-        │ ejecuta bajo el login SQL Server del rol del usuario
-        │ si devuelve None → mensaje de error de BD, fin
-        ▼
+        | ejecuta bajo el login SQL Server del rol del usuario
+        v
 [9] AIAssistant.formatear_respuesta_humana()
-        │ convierte filas crudas en texto legible segun tipo de resultado
-        ▼
-ResultadoConsulta → main.py renderiza en la UI
+        | convierte filas crudas en texto legible
+        v
+ResultadoConsulta → main.py renderiza en la UI (hilo principal)
 ```
 
 ---
@@ -131,24 +131,20 @@ ResultadoConsulta → main.py renderiza en la UI
 
 ### Que es `chat_controller.py`
 
-`ChatController` es la capa de negocio del sistema. Separa la logica de procesamiento
-de consultas de la capa de presentacion (Tkinter), lo que tiene tres ventajas concretas:
+`ChatController` es la capa de negocio del sistema. Separa la logica de procesamiento de consultas de la capa de presentacion (Tkinter).
 
-1. **Testeable sin UI**: se puede instanciar y ejecutar `procesar_consulta()` en tests
-   unitarios o scripts sin necesidad de abrir una ventana de Tkinter.
-2. **Flujo explicito**: el pipeline de 9 etapas esta nombrado y documentado como metodos
-   privados separados, en lugar de vivir en un unico metodo largo.
-3. **Salida estructurada**: devuelve `ResultadoConsulta`, un dataclass inmutable con todos
-   los datos que la GUI necesita; el controller nunca toca widgets ni variables de estado
-   de Tkinter.
+**Ventajas:**
+1. **Testeable sin UI**: se puede instanciar y ejecutar `procesar_consulta()` en tests unitarios o scripts sin necesidad de abrir una ventana de Tkinter.
+2. **Flujo explicito**: el pipeline de 9 etapas esta nombrado y documentado como metodos privados separados.
+3. **Salida estructurada**: devuelve `ResultadoConsulta`, un dataclass inmutable con todos los datos que la GUI necesita.
 
-### Modelos de datos del controller
+### Modelos de datos
 
 | Clase | Descripcion |
 |-------|-------------|
-| `MensajeChat` | Unidad minima de salida: texto + autor ('Asistente', 'Sistema', 'Tu') |
+| `MensajeChat` | Unidad minima de salida: texto + autor ('Asistente', 'Tu') |
 | `EntradaHistorial` | Turno conversacional para el contexto de Gemini: rol + texto |
-| `ResultadoConsulta` | Resultado completo del pipeline: mensajes, SQL, modelo, historial, bloqueo |
+| `ResultadoConsulta` | Resultado completo: mensajes, SQL, modelo, historial, bloqueo |
 
 ### Las 9 etapas del pipeline
 
@@ -164,127 +160,411 @@ de consultas de la capa de presentacion (Tkinter), lo que tiene tres ventajas co
 | 8 | `_ejecutar_consulta_segura` | Envia SQL a SQL Server; captura errores de BD |
 | 9 | `_formatear_resultado_consulta` | Convierte filas en texto legible via Gemini |
 
-### Ejemplo de flujo real
-
-**Pregunta del usuario:** `¿Cuantos libros hay registrados?`
-
-**SQL generado por Gemini:**
-```sql
-SELECT COUNT(*) FROM catalogo.libros
-```
-
-**Despues de aplicar TOP 100** (no aplica: es COUNT, no SELECT de filas):
-```sql
-SELECT COUNT(*) FROM catalogo.libros
-```
-
-**Resultado de SQL Server:** `[(18,)]`
-
-**Respuesta formateada:** `Claro. Actualmente hay 18 libros registrados.`
-
 ---
 
-**Pregunta del usuario:** `Mostrar prestamos vencidos`
+## 4. Funcionalidades
 
-**SQL generado por Gemini:**
-```sql
-SELECT TOP 100 id_prestamo, nombre_usuario, apellido_usuario, titulo,
-       fecha_limite, dias_vencido
-FROM operaciones.vista_prestamos_vencidos
-```
+### 4.1 Chat con IA (panel principal)
 
-**Respuesta formateada:**
-```
-Encontre 2 resultado(s):
-— 3 · Daniel Vargas · Cien años de soledad · 2026-03-01 · 41
-— 5 · Maria Lopez  · El Quijote · 2026-02-15 · 55
-```
+Interfaz de conversacion entre el usuario y el asistente. Solo muestra mensajes del usuario y del asistente; los mensajes de sistema son silenciados para mantener el chat limpio.
 
-### Logging
+- Burbujas de color diferenciadas: usuario (Violet #9D5CFF) y asistente (Slate #1E293B)
+- El SQL generado se muestra en el panel lateral "Inspector SQL", no en el chat
+- Procesamiento asincrono: la UI nunca se congela durante una consulta
 
-El controller usa el logger `chat_controller`. Para activar trazas en desarrollo:
+### 4.2 Dashboard visual (seguridad por rol)
 
-```python
-import logging
-logging.getLogger("chat_controller").setLevel(logging.DEBUG)
-```
+Las metricas mostradas dependen del rol del usuario autenticado. La separacion ocurre **en la base de datos**, no en Python.
 
-Los eventos registrados incluyen:
-- `INFO`: consulta recibida, SQL ejecutado, resultado exitoso
-- `WARNING`: cuota bloqueada, SQL rechazado por RBAC
-- `ERROR`: errores de base de datos, errores de servicio IA
-- `DEBUG`: respuesta cruda de Gemini, SQL normalizado
-
----
-
-## 4. Nuevas funcionalidades
-
-A partir de la version 2.0 la aplicacion incluye cinco funcionalidades adicionales
-integradas en una barra de navegacion entre pestanas visible tras el login.
-
-### 4.1 Panel de administracion (solo admin)
-
-Accesible desde la pestana **⚙ Admin**, visible unicamente para el rol `admin`.
-
-| Funcion | Descripcion |
-|---------|-------------|
-| Lista de usuarios | Muestra id, nombre, apellido, correo y rol de todos los usuarios |
-| Cambiar rol | Dialogo modal para asignar un nuevo rol; valida permiso en backend antes del UPDATE |
-| Logs de auditoria | Ultimas 100 consultas registradas (requiere ejecutar `database_patch.sql`) |
-
-El permiso de administrador se valida **dos veces**: en la UI (no se construye el panel si
-el rol no es `admin`) y en el metodo `_cambiar_rol` antes de ejecutar el UPDATE, previniendo
-escalada de privilegios si se manipula el estado de la aplicacion.
-
-### 4.2 Dashboard visual
-
-Pestana **📊 Dashboard**, accesible para todos los roles.
+**Admin / Operativo — metricas globales:**
 
 | Tarjeta | Consulta |
 |---------|----------|
 | Total Libros | `SELECT COUNT(*) FROM catalogo.libros` |
 | Prestamos Activos | `SELECT COUNT(*) FROM operaciones.vista_prestamos_activos` |
-| Prestamos Vencidos | `SELECT COUNT(*) FROM operaciones.vista_prestamos_vencidos` |
-| Usuarios | `SELECT COUNT(*) FROM personas.usuarios` |
+| Vencidos | `SELECT COUNT(*) FROM operaciones.vista_prestamos_vencidos` |
+| Usuarios Registrados | `SELECT COUNT(*) FROM personas.usuarios` |
 
-Incluye ademas una tabla con los **5 libros mas prestados** del historial.
-Los datos se cargan de forma asincrona (sin bloquear la UI) y pueden actualizarse
-con el boton **⟳ Actualizar**.
+**Usuario — solo sus propios datos (parametrizado con `WHERE id_usuario = ?`):**
+
+| Tarjeta | Consulta |
+|---------|----------|
+| Libros Disponibles | `SELECT COUNT(*) FROM catalogo.libros` con filtro estado |
+| Mis Prestamos Activos | `WHERE id_usuario = ? AND estado = 1` |
+| Mis Vencidos | `WHERE id_usuario = ? AND fecha_limite < GETDATE()` |
+
+> Principio OWASP A01 / Least Privilege: el rol `usuario` nunca recibe datos globales que luego se filtran en Python. La consulta parametrizada con `id_usuario` garantiza que el motor SQL Server devuelva unicamente sus propias filas.
 
 ### 4.3 Busqueda directa sin IA
 
-Pestana **🔍 Busqueda**, accesible para todos los roles.
+Cuatro modos con SQL parametrizado (sin Gemini, sin riesgo de inyeccion):
 
-Ofrece cuatro modos de busqueda directa con SQL parametrizado (sin Gemini):
+| Modo | SQL |
+|------|-----|
+| Por titulo | `WHERE titulo LIKE ?` |
+| Por autor | `WHERE nombre_autor LIKE ? OR apellido_autor LIKE ?` |
+| Por categoria | `WHERE nombre_categoria = ?` (Combobox con categorias de la BD) |
+| Disponibles | Libros no prestados actualmente |
 
-| Modo | Descripcion | Input |
-|------|-------------|-------|
-| Por titulo | `WHERE titulo LIKE ?` | Campo de texto |
-| Por autor | `WHERE nombre_autor LIKE ? OR apellido_autor LIKE ?` | Campo de texto |
-| Por categoria | `WHERE nombre_categoria = ?` | Combobox con categorias |
-| Disponibles | Libros no prestados actualmente | Solo boton |
+### 4.4 Panel de administracion (solo admin)
 
-Cada modo reconstruye el area de input dinamicamente. Las consultas son parametrizadas,
-eliminando el riesgo de SQL injection en esta funcionalidad.
+Visible unicamente para el rol `admin`. El permiso se valida dos veces: en la UI (el panel no se construye si el rol no es `admin`) y en `_cambiar_rol` antes del UPDATE.
 
-### 4.4 Ayuda guiada
+| Funcion | Descripcion |
+|---------|-------------|
+| Lista de usuarios | id, nombre, apellido, correo y rol |
+| Cambiar rol | Dialogo modal; valida permiso en backend antes del UPDATE |
+| Logs de auditoria | Ultimas 100 consultas registradas |
 
-Pestana **💡 Ayuda**, accesible para todos los roles.
+### 4.5 Ayuda guiada por rol
 
-Contiene:
-- **Como usar el chat**: instrucciones paso a paso.
-- **Ejemplos para tu rol**: botones con preguntas tipicas del rol actual. Al hacer clic,
-  el texto se copia al chat y se activa la pestana Chat automaticamente.
-- **Que puedes hacer**: tabla de operaciones disponibles segun el rol.
-- **Consejos**: recomendaciones para obtener mejores respuestas de la IA.
+- Instrucciones paso a paso para el chat
+- Ejemplos de consulta dinamicos segun el rol (admin ve gestion, usuario ve catalogo)
+- Tabla de operaciones disponibles por rol
+- Los botones de ejemplo copian la consulta al chat y activan la pestana Chat
 
-Los ejemplos son dinamicos: un `admin` ve preguntas de gestion; un `usuario` ve preguntas
-de consulta de catalogo.
+### 4.6 Auditoria de consultas
 
-### 4.5 Manejo de errores amigable
+Cada consulta del asistente se registra automaticamente en `auditoria.consultas`:
 
-Todos los mensajes de error visibles al usuario se centralizan en el diccionario
-`MENSAJES` de `features.py`. Ningun panel muestra stack traces ni mensajes tecnicos.
+| Campo | Descripcion |
+|-------|-------------|
+| `id_usuario` | Quien consulto |
+| `pregunta` | Texto original del usuario |
+| `sql_generado` | SQL enviado a la BD |
+| `resultado` | `ejecutado`, `bloqueado`, `cuota_ia`, `conversacional` o `error` |
+| `fecha_hora` | Timestamp |
+
+El registro es asincrono y silente. Si la tabla no existe, la aplicacion funciona igual.
+
+---
+
+## 5. Interfaz grafica
+
+### 5.1 Paleta Deep Carbon
+
+| Token | Color | Uso |
+|-------|-------|-----|
+| `bg` | `#0B0E14` | Fondo principal |
+| `sidebar_bg` | `#0E1119` | Fondo del sidebar |
+| `panel` | `#151921` | Superficies de paneles |
+| `panel_soft` | `#1A2030` | Nivel de profundidad medio |
+| `card` | `#1C212E` | Tarjetas del dashboard |
+| `accent` | `#9D5CFF` | Neon Violet — CTA e iconos activos |
+| `accent2` | `#06B6D4` | Cyan Neon — acento alternativo |
+| `body_text` | `#CBD5E1` | Texto de cuerpo |
+| `muted` | `#94A3B8` | Texto secundario / iconos inactivos |
+| `ok` | `#10B981` | Confirmaciones |
+| `warn` | `#F59E0B` | Advertencias |
+| `error` | `#F87171` | Errores |
+
+### 5.2 Tipografia
+
+| Fuente | Uso | Tamaño minimo |
+|--------|-----|---------------|
+| Segoe UI Variable Display | Titulos y cuerpo | 14px (datos), 16px (cuerpo) |
+| Cascadia Code | Panel SQL / Inspector | 11pt |
+
+### 5.3 Iconografia vectorial — Segoe MDL2 Assets
+
+Todos los iconos son glifos de fuente (`Segoe MDL2 Assets`, incluida en Windows 10/11). **No se usan archivos de imagen** (.png, .jpg, .ico) en ninguna parte de la interfaz.
+
+| Icono | Glifo | Uso |
+|-------|-------|-----|
+| `\uE700` | GlobalNavButton | Boton hamburguesa del sidebar |
+| `\uE8BD` | Chat | Nav: Chat |
+| `\uE9D2` | AreaChart | Nav: Dashboard |
+| `\uE721` | Search | Nav: Busqueda |
+| `\uE897` | Help | Nav: Ayuda |
+| `\uE713` | Settings | Nav: Admin |
+| `\uE72C` | Refresh | Boton Actualizar / Recargar |
+| `\uE7E8` | Power | Boton logout del perfil |
+| `\uE8A5` | Library | Logo en pantalla de error de config |
+
+Los iconos de navegacion activos usan `#9D5CFF` (acento); inactivos usan `#94A3B8` (muted).
+
+### 5.4 Sidebar NavigationView
+
+Sidebar colapsable de 260px con animacion de 12px cada 8ms.
+
+**Estructura:**
+```
++-- Toggle (hamburguesa MDL2) + logotipo "Biblioteca"
++-- Separador
++-- Nav items (icon MDL2 + texto — dos CTkLabel independientes)
+|   · Chat
+|   · Dashboard
+|   · Busqueda
+|   · Ayuda
+|   · Admin (solo rol admin)
++-- [fondo: BOTTOM]
+    +-- Separador
+    +-- Avatar circular 42x42px (#9D5CFF) + iniciales
+    +-- Nombre (16px bold #FFFFFF) + Rol (13px #94A3B8)
+    +-- Boton logout MDL2 (\uE7E8), hover → #F87171
+```
+
+Al colapsar a 64px: se ocultan los labels de texto y el perfil; solo quedan los iconos MDL2.
+
+### 5.5 Widgets conservados en Tkinter/ttk
+
+| Widget | Ubicacion | Razon |
+|--------|-----------|-------|
+| `scrolledtext.ScrolledText` | Chat y panel SQL | Unico widget con soporte de `tag_configure()` para burbujas de color |
+| `tk.PanedWindow` | Divisor chat/SQL | Divisor redimensionable; CTk no tiene equivalente |
+| `ttk.Treeview` | Dashboard, Busqueda, Admin | Tabla de datos eficiente; integrada con tema oscuro via `ttk.Style` |
+| `ttk.Combobox` | BusquedaPanel | Selector de categorias; no hay `CTkCombobox` estable |
+| `tk.Toplevel` | Dialogo cambio de rol | `CTkToplevel` presenta problemas de foco modal en Windows |
+
+### 5.6 Boton Actualizar / Recargar
+
+Todos los botones de recarga usan `_mk_refresh_button`:
+
+- Fondo: azul oscuro `#1E3A8A` | Hover: `#1E40AF`
+- Icono MDL2 `\uE72C` (Segoe MDL2 Assets) + texto (Segoe UI Variable)
+- `corner_radius=12`, altura 38px
+- Implementado como `CTkFrame` compuesto con dos `CTkLabel` separados, permitiendo fuentes independientes para icono y texto
+
+### 5.7 Perfil de usuario (pie del sidebar)
+
+- Datos del usuario extraidos con `_unwrap()`: soporta tanto valores escalares (str) como tuplas pyodbc de un elemento (ejemplo: `('Andres',)` → `'Andres'`)
+- Rol formateado: `admin` → `Administrador`, `operativo` → `Operativo`, `usuario` → `Usuario`
+- Sin prefijos "Nombre:" ni "Rol:" — el diseno es autoexplicativo
+
+---
+
+## 6. Estructura del repositorio
+
+```
+proyectoBD/
++-- chat_controller.py    # Controller del flujo conversacional (sin dependencias de Tkinter)
++-- features.py           # Paneles: Dashboard, Busqueda, Ayuda, Admin (CustomTkinter)
++-- main.py               # Punto de entrada, GUI y sidebar NavigationView (CustomTkinter)
++-- app_services.py       # Servicios: registro de usuarios, preparacion de consultas
++-- ai_assistant.py       # Capa IA: lenguaje natural → T-SQL via Google Gemini
++-- database_manager.py   # Capa de datos: conexion y ejecucion en SQL Server via PyODBC
++-- seguridad.py          # Autenticacion bcrypt, RBAC y proteccion contra fuerza bruta
++-- config.py             # Carga centralizada de variables de entorno (.env)
++-- database.sql          # Script completo de la BD (DDL + datos iniciales + auditoria)
++-- iniciar.vbs           # Lanzador de Windows (sin ventana de consola)
++-- requirements.txt      # Dependencias Python con versiones exactas
++-- .env.example          # Plantilla de variables de entorno (sin credenciales reales)
++-- .gitignore            # Excluye .env y .venv del repositorio
++-- README.md             # Este archivo
+```
+
+> `.env` esta en `.gitignore` y **nunca** debe subirse al repositorio. Usa `.env.example` como plantilla.
+
+---
+
+## 7. Base de datos
+
+Base de datos: `biblioteca` en SQL Server. El script completo esta en [`database.sql`](database.sql).
+
+### Schemas
+
+| Schema | Proposito |
+|--------|-----------|
+| `personas` | Usuarios del sistema |
+| `catalogo` | Autores, categorias y libros |
+| `operaciones` | Prestamos y devoluciones |
+| `auditoria` | Registro de consultas del asistente |
+
+### Tablas principales
+
+| Tabla | Campos clave |
+|-------|-------------|
+| `personas.usuarios` | `id_usuario`, `nombre_usuario`, `apellido_usuario`, `correo`, `password_hash`, `rol` |
+| `catalogo.libros` | `id_libro`, `titulo`, `id_autor`, `id_categoria`, `disponible` |
+| `catalogo.autores` | `id_autor`, `nombre_autor`, `apellido_autor` |
+| `operaciones.prestamos` | `id_prestamo`, `id_usuario`, `id_libro`, `fecha_prestamo`, `fecha_limite`, `estado` |
+| `auditoria.consultas` | `id_consulta`, `id_usuario`, `pregunta`, `sql_generado`, `resultado`, `fecha_hora` |
+
+### Vistas
+
+| Vista | Descripcion |
+|-------|-------------|
+| `operaciones.vista_prestamos_activos` | Prestamos con estado=1 y fecha_devolucion IS NULL |
+| `operaciones.vista_prestamos_vencidos` | Prestamos activos con fecha_limite < GETDATE() |
+
+### Procedimiento almacenado de autenticacion
+
+```sql
+EXEC personas.autenticar_usuario @correo = 'user@example.com'
+-- Devuelve: id_usuario, nombre, apellido, correo, rol, password_hash
+-- Usado unicamente por el login auxiliar SQL_LOGIN_APP (solo lectura)
+```
+
+---
+
+## 8. Seguridad y roles
+
+### Niveles de defensa
+
+| Nivel | Donde | Que hace |
+|-------|-------|----------|
+| 1 | SQL Server | Cada login de BD tiene permisos GRANT/DENY especificos por schema |
+| 2 | `seguridad.py` | RBAC en aplicacion: bloquea DDL, DML y patrones de inyeccion segun rol |
+| 3 | `database_manager.py` | Consultas parametrizadas con `?`; nunca concatenacion de strings |
+| 4 | `seguridad.py` | Proteccion contra fuerza bruta: bloqueo 30s tras 5 intentos fallidos |
+
+### Roles
+
+| Rol | SQL Server login | Permisos de aplicacion |
+|-----|-----------------|----------------------|
+| `admin` | `SQL_LOGIN_ADMIN` | Sin restricciones adicionales |
+| `operativo` | `SQL_LOGIN_OPERATIVO` | Bloquea DDL estructural (DROP, ALTER, CREATE TABLE) |
+| `usuario` | `SQL_LOGIN_USUARIO` | Solo SELECT/WITH; bloquea todo DML y DDL |
+
+### Login auxiliar de autenticacion
+
+El login `SQL_LOGIN_APP` solo puede ejecutar `personas.autenticar_usuario`. No puede hacer SELECT directo sobre `personas.usuarios`. Esto previene lectura masiva de hashes.
+
+### Patrones bloqueados por RBAC (capa 2)
+
+```
+OR '1'='1   OR 1=1   ' OR '   --   /*   */   WAITFOR DELAY   XP_CMDSHELL
+SHUTDOWN   DBCC   KILL   BULK INSERT   OPENROWSET   OPENDATASOURCE
+```
+
+---
+
+## 9. Requisitos previos
+
+| Requisito | Version | Notas |
+|-----------|---------|-------|
+| Python | 3.10+ | Requiere `match/case` y `|` en type hints |
+| SQL Server | 2019+ | Express edition es suficiente |
+| ODBC Driver for SQL Server | 17 o 18 | Instalar desde Microsoft |
+| Windows | 10 / 11 | Segoe MDL2 Assets incluida; Cascadia Code recomendada |
+| Google Gemini API Key | — | Cuenta gratuita en Google AI Studio |
+
+---
+
+## 10. Instalacion
+
+```bash
+# 1. Clonar el repositorio
+git clone <url-del-repositorio>
+cd proyectoBD
+
+# 2. Crear entorno virtual
+python -m venv .venv
+.venv\Scripts\activate
+
+# 3. Instalar dependencias
+pip install -r requirements.txt
+```
+
+### Dependencias
+
+```
+bcrypt==4.3.0
+customtkinter==5.2.2
+google-genai==1.7.0
+google-generativeai==0.8.6
+python-dotenv==1.2.2
+pyodbc==5.3.0
+```
+
+---
+
+## 11. Configuracion del archivo .env
+
+Crear el archivo `.env` en la raiz del proyecto (no commitear, esta en `.gitignore`):
+
+```env
+# API de Google Gemini
+GEMINI_KEY=tu_clave_de_gemini_aqui
+
+# Servidor SQL Server
+SQL_SERVER=localhost\SQLEXPRESS
+SQL_DATABASE=biblioteca
+
+# Login auxiliar (solo puede ejecutar personas.autenticar_usuario)
+SQL_LOGIN_APP=login_app
+SQL_PASS_APP=password_app
+
+# Logins por rol (creados en SQL Server con GRANT/DENY especificos)
+SQL_LOGIN_ADMIN=login_admin
+SQL_PASS_ADMIN=password_admin
+
+SQL_LOGIN_OPERATIVO=login_operativo
+SQL_PASS_OPERATIVO=password_operativo
+
+SQL_LOGIN_USUARIO=login_usuario
+SQL_PASS_USUARIO=password_usuario
+```
+
+---
+
+## 12. Crear la base de datos
+
+```sql
+-- En SQL Server Management Studio o Azure Data Studio:
+-- 1. Abrir database.sql
+-- 2. Ejecutar el script completo
+-- El script crea la BD, schemas, tablas, vistas, procedimientos,
+--   logins, usuarios y datos de prueba.
+```
+
+---
+
+## 13. Ejecucion
+
+```bash
+# Desde el entorno virtual activado:
+python main.py
+
+# O doble clic en iniciar.vbs (sin ventana de consola en Windows)
+```
+
+---
+
+## 14. Uso de la aplicacion
+
+### Login
+1. Ingresar correo y contraseña
+2. El sistema autentica contra `personas.usuarios` con bcrypt
+3. Se construye la sesion con el login SQL Server del rol
+
+### Chat
+- Escribir preguntas en lenguaje natural en español
+- El asistente recuerda los ultimos 10 mensajes (contexto multi-paso)
+- El SQL generado aparece en el panel lateral "Inspector SQL"
+- Solo se muestran mensajes del usuario y del asistente (interfaz limpia)
+
+### Dashboard
+- Se carga automaticamente al cambiar a la pestana
+- Los datos mostrados dependen del rol (admin ve metricas globales, usuario ve sus propios prestamos)
+- Boton "Actualizar" recarga todos los datos
+
+### Busqueda
+- Seleccionar el modo de busqueda (titulo, autor, categoria, disponibles)
+- Ingresar el termino o seleccionar del combobox
+- Los resultados se muestran en una tabla con 5 columnas
+
+### Admin (solo rol admin)
+- Pestana "Usuarios": lista todos los usuarios; boton "Cambiar Rol" abre dialogo modal
+- Pestana "Logs": muestra las ultimas 100 consultas auditadas
+
+---
+
+## 15. Usuarios de prueba
+
+Los siguientes usuarios se crean con el script `database.sql`:
+
+| Correo | Contraseña | Rol |
+|--------|-----------|-----|
+| `admin@biblioteca.cr` | `Admin123!` | admin |
+| `operativo@biblioteca.cr` | `Oper123!` | operativo |
+| `usuario@biblioteca.cr` | `User123!` | usuario |
+
+---
+
+## 16. Manejo de errores
+
+Todos los mensajes de error visibles al usuario se centralizan en el diccionario `MENSAJES` de `features.py`. Ningun panel muestra stack traces ni mensajes tecnicos.
 
 | Situacion | Mensaje al usuario |
 |-----------|-------------------|
@@ -296,433 +576,21 @@ Todos los mensajes de error visibles al usuario se centralizan en el diccionario
 | Cuota IA | "La IA esta sin cuota temporalmente. Espera unos segundos." |
 | SQL bloqueado | "La consulta fue bloqueada por seguridad." |
 
-Los errores tecnicos (traza de excepcion, SQL error) se registran en el logger
-`chat_controller` o `main` para diagnostico interno, sin exponerse al usuario.
+Los errores tecnicos (traza de excepcion, SQL error) se registran en los loggers `chat_controller` y `main` para diagnostico interno.
 
-### 4.6 Auditoria de consultas (opcional)
+### Logging
 
-Cada consulta del asistente se registra automaticamente en `auditoria.consultas`
-(incluida en `database.sql`) con:
+```python
+import logging
 
-- `id_usuario` y `nombre_usuario`
-- `pregunta` (texto original del usuario)
-- `sql_generado` (SQL visual, sin passwords en claro)
-- `resultado`: `ejecutado`, `bloqueado`, `cuota_ia`, `conversacional` o `error`
-- `fecha_hora`
-
-El registro es asincrono y silente: si la tabla no existe (base de datos antigua
-sin regenerar), la aplicacion funciona igual sin mostrar ningun error.
-
----
-
-## 5. Estructura del repositorio
-
-```
-proyectoBD/
-├── chat_controller.py    # Controller del flujo conversacional sin dependencias de Tkinter
-├── features.py           # Paneles adicionales: Dashboard, Busqueda, Ayuda, Admin
-├── main.py               # Punto de entrada y GUI completa (Tkinter)
-├── app_services.py       # Servicios de aplicacion para registro y preparacion de consultas
-├── ai_assistant.py       # Capa de IA: lenguaje natural → T-SQL via Google Gemini
-├── database_manager.py   # Capa de datos: conexion y ejecucion en SQL Server
-├── seguridad.py          # Autenticacion bcrypt, RBAC y proteccion fuerza bruta
-├── config.py             # Carga centralizada de variables de entorno (.env)
-├── database.sql          # Script completo de la base de datos (DDL + datos iniciales + auditoria)
-├── iniciar.vbs           # Lanzador de Windows (sin ventana de consola)
-├── requirements.txt      # Dependencias Python con versiones exactas
-├── .env                  # Variables de entorno con credenciales (NO versionar)
-├── .gitignore            # Excluye .env y .venv del repositorio
-├── docs/
-│   ├── ARQUITECTURA.md   # Detalle tecnico de la arquitectura
-│   └── API_INTERNA.md    # Referencia de clases y metodos publicos
-└── README.md             # Este archivo
+# Activar trazas detalladas durante desarrollo:
+logging.getLogger("chat_controller").setLevel(logging.DEBUG)
+logging.getLogger("main").setLevel(logging.DEBUG)
 ```
 
-> `.env` esta en `.gitignore` y **nunca** debe subirse al repositorio.
-
----
-
-## 6. Base de datos
-
-Base de datos: `biblioteca` en SQL Server. El script completo esta en [`database.sql`](database.sql).
-
-### Schemas
-
-| Schema | Proposito |
-|--------|-----------|
-| `personas` | Usuarios del sistema |
-| `catalogo` | Autores, categorias y libros |
-| `operaciones` | Prestamos y devoluciones |
-
-### Tablas
-
-#### `personas.usuarios`
-Almacena los usuarios que pueden iniciar sesion en la aplicacion.
-
-| Columna | Tipo | Descripcion |
-|---------|------|-------------|
-| `id_usuario` | INT IDENTITY PK | Identificador unico |
-| `nombre_usuario` | VARCHAR(100) | Nombre |
-| `apellido_usuario` | VARCHAR(100) | Apellido |
-| `correo` | VARCHAR(150) UNIQUE | Correo electronico (usado para login) |
-| `telefono` | VARCHAR(20) | Telefono (min. 8 caracteres) |
-| `password_hash` | VARCHAR(72) | Hash bcrypt de la contraseña |
-| `rol` | VARCHAR(20) | Rol del usuario: `admin`, `operativo` o `usuario` |
-
-#### `catalogo.autores`
-| Columna | Tipo | Descripcion |
-|---------|------|-------------|
-| `id_autor` | INT IDENTITY PK | Identificador unico |
-| `nombre_autor` | VARCHAR(100) | Nombre del autor |
-| `apellido_autor` | VARCHAR(100) | Apellido del autor |
-| `nacionalidad` | VARCHAR(100) | Pais de origen |
-
-#### `catalogo.categorias`
-| Columna | Tipo | Descripcion |
-|---------|------|-------------|
-| `id_categoria` | INT IDENTITY PK | Identificador unico |
-| `nombre_categoria` | VARCHAR(100) | Nombre de la categoria |
-| `descripcion` | VARCHAR(200) | Descripcion de la categoria |
-
-#### `catalogo.libros`
-| Columna | Tipo | Descripcion |
-|---------|------|-------------|
-| `id_libro` | INT IDENTITY PK | Identificador unico |
-| `titulo` | VARCHAR(200) | Titulo del libro |
-| `ano_publicacion` | INT | Año de publicacion (1500 - año actual) |
-| `id_autor` | INT FK | Referencia a `catalogo.autores` |
-| `id_categoria` | INT FK | Referencia a `catalogo.categorias` |
-
-#### `operaciones.prestamos`
-| Columna | Tipo | Descripcion |
-|---------|------|-------------|
-| `id_prestamo` | INT IDENTITY PK | Identificador unico |
-| `id_usuario` | INT FK | Usuario que solicito el prestamo |
-| `id_libro` | INT FK | Libro prestado |
-| `fecha_prestamo` | DATE | Fecha en que se realizo el prestamo |
-| `fecha_limite` | DATE | Fecha maxima de devolucion (`fecha_prestamo` + dias configurados) |
-| `fecha_devolucion` | DATE | Fecha real de devolucion (NULL si aun no devuelto) |
-| `estado` | BIT | `1` = prestamo activo, `0` = devuelto |
-
-### Vistas
-
-| Vista | Descripcion |
-|-------|-------------|
-| `catalogo.vista_libros_completa` | Libro con nombre completo del autor y nombre de la categoria |
-| `operaciones.vista_prestamos_activos` | Prestamos activos con nombre del usuario, titulo y fecha limite |
-| `operaciones.vista_prestamos_vencidos` | Prestamos activos cuya fecha limite ya paso, con dias de retraso |
-
-### Procedimientos almacenados
-
-| Procedimiento | Parametros | Descripcion |
-|---------------|------------|-------------|
-| `personas.autenticar_usuario` | `@correo` | Retorna datos del usuario por correo. La app compara el hash bcrypt en Python. |
-| `personas.registrar_usuario` | `@nombre, @apellido, @correo, @telefono, @password_hash, @rol` | Inserta un nuevo usuario. El hash bcrypt se genera en Python antes de llamar. |
-| `operaciones.registrar_prestamo` | `@id_usuario, @id_libro, @dias_prestamo=15` | Registra un nuevo prestamo. `fecha_limite` se calcula automaticamente. |
-| `operaciones.devolver_libro` | `@id_prestamo` | Marca el prestamo como devuelto y registra la fecha. |
-| `catalogo.buscar_libro` | `@palabra` | Busca libros cuyo titulo contenga la palabra clave. |
-
-### Indices
-
-| Indice | Tabla | Columna | Para que sirve |
-|--------|-------|---------|----------------|
-| `IX_BusquedaTitulo` | `catalogo.libros` | `titulo` | Acelera busquedas por titulo (LIKE) desde el asistente IA |
-| `IX_BuscarPrestamoUsuario` | `operaciones.prestamos` | `id_usuario` | Acelera consultas de historial y prestamos activos por usuario |
-| `IX_LoginCorreo` | `personas.usuarios` | `correo` | Acelera el login (WHERE correo = ?) en cada autenticacion |
-
----
-
-## 7. Seguridad y roles
-
-### Flujo de autenticacion
-
-```
-[Usuario ingresa correo + contraseña]
-        │
-        ▼
-¿Correo bloqueado por fuerza bruta?  → SI: acceso denegado (muestra segundos restantes)
-        │ NO
-        ▼
-Conexion con login_app (solo puede ejecutar personas.autenticar_usuario)
-        │
-        ▼
-EXEC personas.autenticar_usuario @correo=?
-        │ devuelve: id, nombre, apellido, correo, rol, password_hash
-        │ si 0 filas → registrar intento fallido → acceso denegado
-        ▼
-bcrypt.checkpw(contraseña_ingresada, hash_almacenado)
-        │ si no coincide → registrar intento fallido → acceso denegado
-        ▼
-5 intentos fallidos → bloqueo de 30 segundos por correo
-        │ si coincide → limpiar intentos fallidos
-        ▼
-Seleccionar login de SQL Server segun rol del usuario
-        │
-        ▼
-[Sesion abierta con DatabaseManager usando el login del rol]
-```
-
-### Logins internos de SQL Server
-
-El usuario final **nunca ve ni ingresa** estas credenciales. La aplicacion las usa internamente:
-
-| Login | Proposito | Permisos |
-|-------|-----------|---------|
-| `login_app` | Autenticacion inicial | Solo EXECUTE en `personas.autenticar_usuario` |
-| `login_admin` | Sesion de administrador | SELECT, INSERT, UPDATE, DELETE en todos los schemas |
-| `login_operativo` | Sesion operativa | SELECT, INSERT, UPDATE en personas; SELECT/INSERT/UPDATE/DELETE en catalogo y operaciones |
-| `login_usuario` | Sesion de lectura | Solo SELECT en catalogo y operaciones |
-
-### RBAC en la aplicacion (segunda capa de defensa)
-
-`SecurityManager.validar_accion()` verifica el SQL antes de enviarlo al motor:
-
-| Rol | Regla adicional | Comandos bloqueados |
-|-----|-----------------|---------------------|
-| `usuario` | Debe iniciar con SELECT o WITH | INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, MERGE, GRANT, REVOKE, EXEC, BACKUP, RESTORE |
-| `operativo` | Sin restriccion de tipo | DROP, ALTER, CREATE DATABASE/TABLE/SCHEMA, TRUNCATE, GRANT, REVOKE, BACKUP, RESTORE |
-| `admin` | Sin restricciones en la app | — (SQL Server aplica sus propios permisos) |
-
-Ademas, para **todos los roles** se bloquean:
-- Sentencias con multiples instrucciones separadas por `;`
-- Patrones de SQL injection: `OR '1'='1'`, `OR 1=1`, `--`, `/*`, `WAITFOR DELAY`, `XP_CMDSHELL`
-
----
-
-## 8. Requisitos previos
-
-- **Python 3.11** o superior
-- **SQL Server** (cualquier edicion, incluyendo Express) con la base de datos `biblioteca` creada
-- **ODBC Driver 17 for SQL Server** instalado en el sistema
-  - Descargar en: [Microsoft ODBC Driver for SQL Server](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server)
-- **Clave de API de Google Gemini**
-  - Obtener en: [Google AI Studio](https://aistudio.google.com/app/apikey)
-
----
-
-## 9. Instalacion
-
-```bash
-# 1. Clonar el repositorio
-git clone https://github.com/chepe5251/proyectoBD.git
-cd proyectoBD
-
-# 2. Crear entorno virtual
-python -m venv .venv
-
-# 3. Activar el entorno virtual
-# Windows PowerShell:
-.venv\Scripts\Activate.ps1
-# Windows CMD:
-.venv\Scripts\activate.bat
-
-# 4. Instalar dependencias
-pip install -r requirements.txt
-```
-
-Dependencias instaladas (versiones exactas):
-
-| Paquete | Version | Para que se usa |
-|---------|---------|-----------------|
-| `bcrypt` | 4.3.0 | Hash seguro de contraseñas |
-| `google-genai` | 1.7.0 | SDK principal de Google Gemini |
-| `google-generativeai` | 0.8.6 | SDK alternativo (fallback) |
-| `python-dotenv` | 1.2.2 | Carga de variables de entorno desde `.env` |
-| `pyodbc` | 5.3.0 | Conexion a SQL Server via ODBC |
-
----
-
-## 10. Configuracion del archivo .env
-
-Crear un archivo llamado `.env` en la raiz del proyecto (al mismo nivel que `main.py`). Este archivo **nunca debe subirse al repositorio**.
-
-```env
-# Clave de Google Gemini (obtener en aistudio.google.com)
-GEMINI_API_KEY=tu_clave_de_gemini_aqui
-
-# Modelo de Gemini a usar (opcional, si se omite usa gemini-2.5-flash por defecto)
-# Opciones: gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash, etc.
-GEMINI_MODEL=gemini-2.5-flash
-
-# SQL Server: nombre del servidor o instancia
-# Ejemplos: localhost, DESKTOP-ABC\SQLEXPRESS, 192.168.1.10
-DB_SERVER=nombre_del_servidor
-DB_NAME=biblioteca
-
-# Certificado TLS: "yes" para desarrollo local, "no" en produccion con cert valido
-DB_TRUST_CERT=yes
-
-# Login auxiliar: solo puede llamar personas.autenticar_usuario
-SQL_LOGIN_APP=login_app
-SQL_PASS_APP=App#2026!
-
-# Logins por rol (la app los selecciona automaticamente segun el rol del usuario)
-SQL_LOGIN_ADMIN=login_admin
-SQL_PASS_ADMIN=Admin#2026!
-SQL_LOGIN_OPERATIVO=login_operativo
-SQL_PASS_OPERATIVO=Operativo#2026!
-SQL_LOGIN_USUARIO=login_usuario
-SQL_PASS_USUARIO=Usuario#2026!
-```
-
-> Si la aplicacion detecta que falta `GEMINI_API_KEY` al iniciar, muestra una pantalla de error con instrucciones y un boton para reintentar sin necesidad de reiniciar el programa.
-
----
-
-## 11. Crear la base de datos
-
-Abrir **SQL Server Management Studio**, conectarse al servidor y ejecutar el script completo:
-
-```
-Archivo > Abrir > Archivo... > seleccionar database.sql > Ejecutar (F5)
-```
-
-El script crea automaticamente:
-- La base de datos `biblioteca`
-- Los tres schemas (`personas`, `catalogo`, `operaciones`)
-- Todas las tablas con sus constraints y foreign keys
-- Los logins, usuarios y roles de SQL Server
-- Los permisos para cada rol
-- Los indices de rendimiento
-- Los procedimientos almacenados
-- Las vistas
-- 10 usuarios, 6 autores, 5 categorias, 18 libros y 5 prestamos de ejemplo
-
-> **Nota**: Si ya existe una base de datos `biblioteca`, el script fallara en el primer `CREATE DATABASE`. En ese caso ejecutar primero:
-> ```sql
-> USE master;
-> ALTER DATABASE biblioteca SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-> DROP DATABASE biblioteca;
-> ```
-
----
-
-## 12. Ejecucion
-
-### Opcion A — Doble clic (recomendado en Windows)
-
-Hacer doble clic en `iniciar.vbs`. Este lanzador:
-1. Verifica que existe `main.py` en la carpeta
-2. Verifica que existe el archivo `.env`
-3. Verifica que Python esta instalado en el PATH
-4. Lanza la aplicacion **sin ventana de consola negra** de fondo
-
-### Opcion B — Desde la terminal
-
-```bash
-# Activar el entorno virtual primero
-.venv\Scripts\Activate.ps1
-
-# Ejecutar la aplicacion
-python main.py
-```
-
----
-
-## 13. Uso de la aplicacion
-
-### Pantalla de login
-
-La card se muestra centrada en la ventana. Ingresar el **correo electronico** y la **contraseña** del usuario registrado en `personas.usuarios`:
-
-```
-Correo:    andres.morales@outlook.com
-Contraseña: admin2026
-```
-
-- Si las credenciales son incorrectas se muestra un mensaje de error.
-- Tras 5 intentos fallidos el correo queda bloqueado 30 segundos.
-- El boton **"Registrar usuario"** abre el formulario de registro.
-
-### Pantalla de registro
-
-Formulario con scroll activado solo mientras el cursor esta sobre el canvas. Completar: nombre, apellido, correo, telefono, contraseña y confirmacion. El sistema:
-- Valida que el correo tenga formato valido.
-- Exige minimo 8 caracteres en el telefono y 6 en la contraseña.
-- Verifica que las contraseñas coincidan.
-- Genera el hash bcrypt y reutiliza la misma construccion parametrizada de `personas.registrar_usuario` que usa el registro via chat.
-- El rol asignado es siempre `usuario` (solo lectura).
-
-### Pantalla del asistente
-
-**Panel izquierdo — Chat:**
-
-Escribir preguntas en lenguaje natural y presionar Enter o el boton **"Enviar ➤"**. Los mensajes se muestran en burbujas con estilo diferente segun el autor (usuario, asistente, sistema).
-
-El asistente mantiene el contexto de los ultimos 10 intercambios. Puede:
-- Pedir datos que faltan antes de ejecutar una accion (`PEDIR:`).
-- Dar una explicacion o instruccion sin ejecutar SQL (`INSTRUCCION:`).
-- Registrar usuarios a traves del chat generando el hash bcrypt automaticamente.
-
-```
-¿Cuantos libros hay registrados?
-Mostrar los prestamos activos
-Libros de Gabriel Garcia Marquez
-Libros de categoria Tecnologia
-¿Que prestamos estan vencidos?
-Buscar libro "1984"
-Registrar un nuevo usuario
-```
-
-Los botones de consulta rapida son **dinamicos segun el rol** del usuario logueado:
-
-| Rol | Botones |
-|-----|---------|
-| `admin` | Cuantos libros hay, Prestamos activos, Registrar nuevo libro, Prestamos vencidos |
-| `operativo` | Cuantos libros hay, Prestamos activos, Prestamos vencidos, Lista de autores |
-| `usuario` | Cuantos libros hay, Libros de tecnologia, Lista de autores, Libros disponibles |
-
-**Panel derecho — SQL generado:**
-
-Muestra en tiempo real:
-- La sentencia T-SQL que la IA genero para responder la pregunta.
-- Estado de conexion a la base de datos.
-- El modelo de Gemini que proceso la solicitud.
-- El estado de ejecucion: `Pendiente de validacion`, `Recopilando informacion`, `⚠ Bloqueado por permisos de rol`, `✓ Ejecutado correctamente` o `✗ Error en base de datos`.
-
----
-
-## 14. Usuarios de prueba
-
-Estos usuarios se insertan automaticamente al ejecutar `database.sql`:
-
-| Nombre | Correo | Contraseña | Rol |
-|--------|--------|------------|-----|
-| Andres Morales | andres.morales@outlook.com | admin2026 | admin |
-| Carlos Mendez | carlos.mendez@gmail.com | carlos2026 | operativo |
-| Daniel Vargas | daniel.vargas@outlook.com | daniel2026 | operativo |
-| Ana Rodriguez | ana.rodriguez@gmail.com | ana2026 | usuario |
-| Laura Sanchez | laura.sanchez@outlook.com | laura2026 | usuario |
-| Jose Fernandez | jose.fernandez@outlook.com | jose2026 | usuario |
-| Maria Lopez | maria.lopez@gmail.com | maria2026 | usuario |
-| Sofia Herrera | sofia.herrera@gmail.com | sofia2026 | usuario |
-| Luis Gomez | luis.gomez@gmail.com | luis2026 | usuario |
-| Valeria Castro | valeria.castro@gmail.com | valeria2026 | usuario |
-
----
-
-## 15. Manejo de errores
-
-Todos los mensajes visibles al usuario son amigables y no exponen detalles tecnicos.
-Los detalles internos (stack traces, mensajes de excepcion) van al logger del modulo.
-Los mensajes de usuario se centralizan en el dict `MENSAJES` de `features.py`.
-
-| Situacion | Mensaje al usuario | Registro interno |
-|-----------|--------------------|-----------------|
-| Falta `GEMINI_API_KEY` | Pantalla de error con instrucciones y boton Reintentar | — |
-| Correo o contraseña incorrectos | "Credenciales incorrectas." (sin revelar que campo fallo) | — |
-| 5 intentos fallidos consecutivos | Bloqueo del correo por 30 segundos | `_log.warning` en seguridad.py |
-| Cuota de Gemini agotada (429) | "La IA esta sin cuota temporalmente. Espera N segundos." | `logger.warning` en chat_controller |
-| Modelo de Gemini no disponible (404) | Fallback automatico; sin mensaje al usuario si hay candidato disponible | `logger.warning` |
-| Error de servicio IA (otro) | "La IA no pudo procesar tu solicitud. Intenta de nuevo." | `logger.error` |
-| Error inesperado en la consulta | "Ocurrio un error inesperado. Por favor, intenta de nuevo." | `logger.error` en main.py |
-| Accion bloqueada por RBAC | "Tu rol no tiene permisos para esta accion." + descripcion del rol | `logger.warning` |
-| SQL con patron de injection | Bloqueado por `validar_accion()`; mismo mensaje de permisos | `logger.warning` |
-| SQL con placeholder `?` incompleto | Mensaje pidiendo reformular la pregunta | — |
-| IA pide mas datos (`PEDIR:`) | Pregunta de seguimiento del asistente | historial actualizado |
-| IA da instruccion sin SQL (`INSTRUCCION:`) | Mensaje del asistente sin ejecutar SQL | historial actualizado |
-| Error de base de datos | "Ocurrio un error al obtener los datos. Intenta de nuevo." | `_log.error` en database_manager |
-| Sin resultados en busqueda directa | "No se encontraron resultados para tu busqueda." | — |
-| Tabla auditoria no existe | Panel Logs muestra "Sin registros. Regenera la BD." | excepcion capturada silenciosamente |
-| Consulta retorna muchas filas | Limitado automaticamente a TOP 100 | — |
-| Servidor SQL Server sin respuesta | Timeout de 5 segundos; "Error al obtener los datos." | `_log.error` en database_manager |
+| Nivel | Eventos |
+|-------|---------|
+| `INFO` | Consulta recibida, SQL ejecutado, resultado exitoso |
+| `WARNING` | Cuota bloqueada, SQL rechazado por RBAC |
+| `ERROR` | Errores de BD, errores de servicio IA |
+| `DEBUG` | Respuesta cruda de Gemini, SQL normalizado |

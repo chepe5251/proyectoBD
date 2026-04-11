@@ -255,13 +255,13 @@ class ChatController:
         )
 
     @staticmethod
-    def _mensaje(texto: str, autor: str = "Sistema") -> tuple[MensajeChat, ...]:
+    def _mensaje(texto: str, autor: str = "Asistente") -> tuple[MensajeChat, ...]:
         """
         Envuelve un texto en una tupla de MensajeChat lista para ResultadoConsulta.
 
         Args:
             texto:  Contenido del mensaje a mostrar.
-            autor:  Identificador del emisor ('Sistema', 'Asistente', etc.).
+            autor:  Identificador del emisor ('Asistente', 'Tú', etc.).
 
         Returns:
             Tupla de un elemento con el MensajeChat construido.
