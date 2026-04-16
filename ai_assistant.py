@@ -5,13 +5,13 @@ Descripcion: Capa de Inteligencia Artificial. Traduce preguntas en lenguaje natu
              resultados crudos de la base de datos en texto legible para el usuario.
 
 Responsabilidades:
-    - Inicializar el cliente de Google Gemini con soporte para SDK nuevo y legado.
+    - Inicializar el cliente de Google Gemini usando el SDK oficial `google-genai`.
     - Mantener el contexto de dominio (schema de la biblioteca) como parte del prompt.
     - Gestionar errores de cuota (429) y modelos no disponibles (404) con fallback automatico.
     - Formatear resultados de SQL Server en texto legible segun el tipo de respuesta.
 
 Arquitectura:
-    - Patron Adaptador para soportar google-genai (nuevo) y google-generativeai (legado).
+    - Integracion directa con `google-genai` para invocar Gemini.
     - Inyeccion de contexto de dominio (system prompt) para restringir la IA al schema
       de la base de datos biblioteca.
 """
@@ -21,23 +21,9 @@ import re
 from typing import Any, Optional
 
 import config
+from google import genai
+from google.genai import errors as genai_errors
 
-# --- Gestión de Dependencias del SDK ---
-# Se implementa un mecanismo de fallback para asegurar la resiliencia del sistema
-# ante diferentes entornos de instalación de Google AI.
-try:
-    from google import genai  # SDK principal de última generación.
-    from google.genai import errors as genai_errors
-    _SDK = "new"
-except ImportError:
-    try:
-        import google.generativeai as legacy_genai  # Compatibilidad con entornos legados.
-        _SDK = "legacy"
-    except ImportError as exc:
-        raise ImportError(
-            "Dependencia crítica no encontrada. Se requiere el SDK de Gemini. "
-            "Ejecute: pip install google-genai o pip install google-generativeai"
-        ) from exc
 
 class AIAssistant:
     """
@@ -54,12 +40,11 @@ class AIAssistant:
 
         Raises:
             ValueError: Si GEMINI_API_KEY no esta configurada en el entorno.
-            ImportError: Si ningun SDK de Google Gemini esta instalado.
+            ImportError: Si `google-genai` no esta instalado.
         """
         if not config.GEMINI_KEY:
-            raise ValueError("Acceso denegado: GEMINI_API_KEY es nula o inválida en el entorno (.env).")
+            raise ValueError("Acceso denegado: GEMINI_API_KEY es nula o invalida en el entorno (.env).")
 
-        # Candidatos de modelo en orden de preferencia.
         preferred_model = os.getenv("GEMINI_MODEL")
         self.model_candidates = [
             preferred_model,
@@ -68,19 +53,15 @@ class AIAssistant:
             "gemini-2.0-flash",
             "gemini-2.0-flash-lite",
         ]
-        self.model_candidates = [m for i, m in enumerate(self.model_candidates)
-                                 if m and m not in self.model_candidates[:i]]
+        self.model_candidates = [
+            model_name
+            for index, model_name in enumerate(self.model_candidates)
+            if model_name and model_name not in self.model_candidates[:index]
+        ]
         self.model_name: str = self.model_candidates[0]
+        self.client = genai.Client(api_key=config.GEMINI_KEY)
 
-        # Inicialización del cliente según el SDK detectado en tiempo de ejecución.
-        if _SDK == "new":
-            self.client = genai.Client(api_key=config.GEMINI_KEY)
-        else:
-            legacy_genai.configure(api_key=config.GEMINI_KEY)
-            self.model = legacy_genai.GenerativeModel(self.model_name)
-        
-        # Definición del esquema técnico del dominio (Data Dictionary context).
-        # Este prompt actúa como una restricción de integridad para la IA.
+        # Este prompt actua como una restriccion de integridad para la IA.
         self.contexto: str = """
         Eres un analista de datos de la base de datos de una biblioteca.
 
@@ -96,7 +77,7 @@ class AIAssistant:
         Vistas disponibles (preferirlas para consultas de detalle):
         - catalogo.vista_libros_completa (id_libro, titulo, ano_publicacion, nombre_autor, apellido_autor, nombre_categoria)
         - operaciones.vista_prestamos_activos (id_prestamo, nombre_usuario, apellido_usuario, titulo, fecha_prestamo, fecha_limite)
-        - operaciones.vista_prestamos_vencidos (id_prestamo, nombre_usuario, apellido_usuario, correo, titulo, fecha_prestamo, fecha_limite, dias_vencido) — usar para preguntas sobre prestamos vencidos o atrasados.
+        - operaciones.vista_prestamos_vencidos (id_prestamo, nombre_usuario, apellido_usuario, correo, titulo, fecha_prestamo, fecha_limite, dias_vencido) - usar para preguntas sobre prestamos vencidos o atrasados.
 
         Procedimientos almacenados disponibles:
         - EXEC personas.registrar_usuario @nombre, @apellido, @correo, @telefono, @password_hash, @rol
@@ -116,7 +97,7 @@ class AIAssistant:
 
         Flujo conversacional:
         - Si necesitas mas datos para completar una accion, responde PEDIR: seguido de la pregunta al usuario.
-          Ejemplo: PEDIR: ¿Cual es el ID del libro que deseas prestar?
+          Ejemplo: PEDIR: Cual es el ID del libro que deseas prestar?
         - Si la accion no requiere SQL (saludo, explicacion, aclaracion), responde INSTRUCCION: seguido del mensaje.
           Ejemplo: INSTRUCCION: Para buscar un libro necesito que me indiques el titulo o autor.
         - Para registrar un usuario con contrasena, usa el prefijo PENDING_HASH: seguido del EXEC completo,
@@ -172,7 +153,6 @@ class AIAssistant:
             La calidad del SQL generado depende directamente de la claridad del prompt del usuario
             y de la estructura definida en el atributo self.contexto.
         """
-        # Construccion del bloque de historial conversacional.
         historial_texto = ""
         if historial:
             entradas = []
@@ -186,89 +166,62 @@ class AIAssistant:
                     entradas.append(entrada)
             historial_texto = "\n".join(entradas)
 
-        # Estructuración del prompt final (Prompt Engineering).
         if historial_texto:
             prompt_final: str = (
                 f"{self.contexto}\n\nHistorial de conversacion:\n{historial_texto}\n"
                 f"Usuario dice: {pregunta_usuario}\nSQL o INSTRUCCION:"
             )
         else:
-            prompt_final: str = f"{self.contexto}\nUsuario dice: {pregunta_usuario}\nSQL o INSTRUCCION:"
-        
+            prompt_final = f"{self.contexto}\nUsuario dice: {pregunta_usuario}\nSQL o INSTRUCCION:"
+
         try:
-            if _SDK == "new":
-                response = None
-                last_not_found = None
+            response = None
+            last_not_found = None
 
-                for model_name in self.model_candidates:
-                    try:
-                        response = self.client.models.generate_content(
-                            model=model_name,
-                            contents=prompt_final
-                        )
-                        self.model_name = model_name
-                        break
-                    except genai_errors.APIError as model_exc:
-                        is_not_found = (
-                            model_exc.code == 404
-                            or str(getattr(model_exc, "status", "")).upper() == "NOT_FOUND"
-                        )
-                        if is_not_found:
-                            last_not_found = model_exc
-                            continue
-                        raise
+            for model_name in self.model_candidates:
+                try:
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents=prompt_final,
+                    )
+                    self.model_name = model_name
+                    break
+                except genai_errors.APIError as model_exc:
+                    is_not_found = (
+                        model_exc.code == 404
+                        or str(getattr(model_exc, "status", "")).upper() == "NOT_FOUND"
+                    )
+                    if is_not_found:
+                        last_not_found = model_exc
+                        continue
+                    raise
 
-                if response is None:
-                    attempted = ", ".join(self.model_candidates)
-                    if last_not_found:
-                        raise AIServiceError(
-                            f"No hay modelos disponibles para esta API key. Intentados: {attempted}."
-                        ) from last_not_found
-                    raise AIServiceError("No fue posible obtener respuesta del modelo.")
-            else:
-                response = self.model.generate_content(prompt_final)
-        except Exception as exc:
-            if _SDK == "new" and isinstance(exc, genai_errors.APIError):
-                retry_seconds = self._extraer_retry_seconds(getattr(exc, "details", None))
-                if exc.code == 429 or str(getattr(exc, "status", "")).upper() == "RESOURCE_EXHAUSTED":
-                    base_msg = "Gemini sin cuota disponible (429 RESOURCE_EXHAUSTED)."
-                    if retry_seconds:
-                        raise AIQuotaExceededError(
-                            f"{base_msg} Reintentar en {retry_seconds} segundos.",
-                            retry_after_seconds=retry_seconds,
-                        ) from exc
+            if response is None:
+                attempted = ", ".join(self.model_candidates)
+                if last_not_found:
+                    raise AIServiceError(
+                        f"No hay modelos disponibles para esta API key. Intentados: {attempted}."
+                    ) from last_not_found
+                raise AIServiceError("No fue posible obtener respuesta del modelo.")
+        except genai_errors.APIError as exc:
+            retry_seconds = self._extraer_retry_seconds(getattr(exc, "details", None))
+            if exc.code == 429 or str(getattr(exc, "status", "")).upper() == "RESOURCE_EXHAUSTED":
+                base_msg = "Gemini sin cuota disponible (429 RESOURCE_EXHAUSTED)."
+                if retry_seconds:
                     raise AIQuotaExceededError(
-                        f"{base_msg} Revisar límites y facturación del proyecto."
+                        f"{base_msg} Reintentar en {retry_seconds} segundos.",
+                        retry_after_seconds=retry_seconds,
                     ) from exc
-
-                raise AIServiceError(
-                    f"Error de servicio Gemini ({exc.code} {exc.status})."
+                raise AIQuotaExceededError(
+                    f"{base_msg} Revisar limites y facturacion del proyecto."
                 ) from exc
 
-            if _SDK == "legacy":
-                exc_str = str(exc)
-                type_name = type(exc).__name__
-                is_quota = (
-                    type_name == "ResourceExhausted"
-                    or "429" in exc_str
-                    or "RESOURCE_EXHAUSTED" in exc_str.upper()
-                )
-                if is_quota:
-                    retry_match = re.search(r"(\d+)s", exc_str)
-                    retry_seconds = int(retry_match.group(1)) if retry_match else None
-                    base_msg = "Gemini sin cuota disponible (429)."
-                    if retry_seconds:
-                        raise AIQuotaExceededError(
-                            f"{base_msg} Reintentar en {retry_seconds} segundos.",
-                            retry_after_seconds=retry_seconds,
-                        ) from exc
-                    raise AIQuotaExceededError(
-                        f"{base_msg} Revisar límites y facturación del proyecto."
-                    ) from exc
-
+            raise AIServiceError(
+                f"Error de servicio Gemini ({exc.code} {exc.status})."
+            ) from exc
+        except Exception as exc:
             raise AIServiceError(f"Error al procesar la solicitud con IA: {exc}") from exc
 
-        # Retorno de la cadena procesada, eliminando espacios en blanco innecesarios.
         return (response.text or "").strip()
 
     @staticmethod
@@ -313,7 +266,6 @@ class AIAssistant:
         if not filas:
             return "No encontre resultados para esa consulta en este momento."
 
-        # Caso mas comun: COUNT(*) u otro escalar.
         primera_fila = filas[0]
         primera_lista = self._fila_a_lista(primera_fila)
         if len(primera_lista) == 1 and len(filas) == 1:
@@ -321,7 +273,6 @@ class AIAssistant:
             entidad = self._inferir_entidad_desde_pregunta(pregunta_usuario)
             return f"Claro. Actualmente hay {valor} {entidad} registrados."
 
-        # Una columna y varias filas: devolvemos listado legible.
         una_columna = all(len(self._fila_a_lista(f)) == 1 for f in filas)
         if una_columna:
             valores = [self._to_texto(self._fila_a_lista(f)[0]) for f in filas]
@@ -330,20 +281,19 @@ class AIAssistant:
             extra = "" if len(valores) <= limite else f" ... y {len(valores) - limite} mas."
             return f"Con gusto. Encontre {len(valores)} resultados: {vista}{extra}"
 
-        # Tabla general: mostrar primeras filas en formato compacto.
         limite_filas = 5
         preview = []
         for fila in filas[:limite_filas]:
             columnas = self._fila_a_lista(fila)
-            preview.append("— " + " · ".join(self._to_texto(c) for c in columnas))
+            preview.append("- " + " | ".join(self._to_texto(c) for c in columnas))
 
         cuerpo = "\n".join(preview)
         sufijo = "" if len(filas) <= limite_filas else f"\n... y {len(filas) - limite_filas} filas mas."
-        return f"Encontré {len(filas)} resultado(s):\n{cuerpo}{sufijo}"
+        return f"Encontre {len(filas)} resultado(s):\n{cuerpo}{sufijo}"
 
 
 class AIServiceError(RuntimeError):
-    """Error controlado de integración con el servicio de IA."""
+    """Error controlado de integracion con el servicio de IA."""
 
 
 class AIQuotaExceededError(AIServiceError):
@@ -352,5 +302,3 @@ class AIQuotaExceededError(AIServiceError):
     def __init__(self, message: str, retry_after_seconds: Optional[int] = None):
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
-
-
