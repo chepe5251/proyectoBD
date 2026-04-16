@@ -194,7 +194,7 @@ Raises:
 - `ImportError` — si ningun SDK de Google Gemini esta instalado.
 
 Inicializa:
-- El cliente Gemini (SDK nuevo `google-genai` o legado `google-generativeai`, segun disponibilidad).
+- El cliente Gemini usando `google-genai` como SDK principal. Si en el entorno existe `google-generativeai`, puede usarse como fallback legado.
 - La lista de modelos candidatos con fallback automatico.
 - El contexto de dominio (`self.contexto`) con el schema completo de la biblioteca.
 
