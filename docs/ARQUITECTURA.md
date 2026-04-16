@@ -56,7 +56,7 @@ No tiene dependencias internas. Es importada por `ai_assistant.py`, `seguridad.p
 ### 2. Capa de IA — `ai_assistant.py`
 
 Responsabilidades:
-- Inicializar el cliente de Google Gemini con fallback entre SDK nuevo (`google-genai`) y SDK legado (`google-generativeai`).
+- Inicializar el cliente de Google Gemini usando `google-genai` como SDK principal y `google-generativeai` solo como fallback legado opcional.
 - Mantener el contexto de dominio: tablas, vistas y procedimientos autorizados de la base `biblioteca`.
 - Mantener el historial conversacional para dar contexto a cada pregunta (ultimos 10 turnos).
 - Traducir preguntas en lenguaje natural a T-SQL ejecutable, o retornar prefijos especiales:
@@ -253,7 +253,7 @@ La limpieza del SQL generado por la IA se concentra en `ConsultaService`, mientr
 Esto mantiene `AIAssistant` desacoplado del formato de respuesta del modelo y a
 `BibliotecaApp` enfocada en la presentacion.
 
-**Doble SDK de Google Gemini**
-Se mantiene soporte para `google-genai` (SDK nuevo, preferido) y `google-generativeai` (SDK legado,
-fallback). Esto garantiza compatibilidad con entornos donde solo uno de los dos esta disponible. La
-deteccion es automatica en tiempo de importacion.
+**SDK de Google Gemini**
+El setup por defecto instala `google-genai` como SDK principal. El codigo conserva compatibilidad con
+`google-generativeai` como fallback legado opcional si ya existe en el entorno. La deteccion es
+automatica en tiempo de importacion.

@@ -462,7 +462,6 @@ pip install -r requirements.txt
 bcrypt==4.3.0
 customtkinter==5.2.2
 google-genai==1.7.0
-google-generativeai==0.8.6
 python-dotenv==1.2.2
 pyodbc==5.3.0
 ```
